@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const pdfParseModule = require('pdf-parse');
+const { insertDocumentEmbeddings, retrieveRagChunks, buildRagContextBlock } = require('./rag');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -16,6 +17,25 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+/** Avoid hung /api/chat when OpenAI or Supabase RAG never completes. */
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise
+      .then((v) => {
+        clearTimeout(t);
+        resolve(v);
+      })
+      .catch((e) => {
+        clearTimeout(t);
+        reject(e);
+      });
+  });
+}
+
+const MAX_RAG_BLOCK_CHARS = 45000;
+const MAX_TOTAL_SYSTEM_CHARS = 130000;
 
 // Parse PDF text in a way that supports both pdf-parse v2 and v1-style exports.
 async function extractPdfText(buffer) {
@@ -267,6 +287,23 @@ app.post('/api/extract-text', async (req, res) => {
       console.log('[extract-text] Skipping summary generation for scanned image');
     }
 
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey && data[0] && data[0].id != null) {
+      try {
+        const ragResult = await insertDocumentEmbeddings(supabase, {
+          userId,
+          documentId: data[0].id,
+          fullText: extractedText,
+          openaiApiKey: openaiKey,
+        });
+        console.log('[extract-text] document_embeddings:', ragResult);
+      } catch (ragErr) {
+        console.error('[extract-text] RAG embedding failed (document text still saved):', ragErr.message || ragErr);
+      }
+    } else if (!openaiKey) {
+      console.log('[extract-text] OPENAI_API_KEY not set; skipping document embeddings');
+    }
+
     console.log('[extract-text] Process completed successfully');
     res.json({
       success: true,
@@ -364,36 +401,104 @@ ${String(text).slice(0, 70000)}`;
   }
 });
 
-// Chat endpoint: forward messages to Anthropic API
+// Chat endpoint: forward messages to Anthropic API (RAG over personal chunks + MedlinePlus)
 app.post('/api/chat', async (req, res) => {
+  const chatReqId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  console.log(`[chat:${chatReqId}] POST /api/chat start`);
   try {
-    const { messages, systemPrompt } = req.body;
+    const { messages, systemPrompt, userId } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
+      console.log(`[chat:${chatReqId}] bad request: messages not an array`);
       return res.status(400).json({ error: 'messages array is required' });
     }
 
+    console.log(
+      `[chat:${chatReqId}] body summary: messages=${messages.length} userId=${userId ? String(userId).slice(0, 8) + '…' : '(missing)'} hasOpenAI=${!!process.env.OPENAI_API_KEY}`
+    );
+
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
+      console.error(`[chat:${chatReqId}] ANTHROPIC_API_KEY missing`);
       return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set on server' });
+    }
+
+    let ragBlock = '';
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey && userId) {
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+      const queryText = lastUserMsg && lastUserMsg.content ? String(lastUserMsg.content) : '';
+      console.log(`[chat:${chatReqId}] RAG path: queryText length=${queryText.length}`);
+      const ragStart = Date.now();
+      try {
+        const { docChunks, medChunks } = await withTimeout(
+          retrieveRagChunks(supabase, openaiKey, {
+            userId,
+            queryText,
+            docLimit: 8,
+            medLimit: 5,
+          }),
+          25000,
+          'retrieveRagChunks'
+        );
+        ragBlock = buildRagContextBlock(docChunks, medChunks);
+        console.log(
+          `[chat:${chatReqId}] RAG done in ${Date.now() - ragStart}ms docChunks=${docChunks.length} medChunks=${medChunks.length} ragBlockLen=${ragBlock.length}`
+        );
+        if (ragBlock.length > MAX_RAG_BLOCK_CHARS) {
+          console.warn(
+            `[chat:${chatReqId}] ragBlock too long (${ragBlock.length}), truncating to ${MAX_RAG_BLOCK_CHARS}`
+          );
+          ragBlock = `${ragBlock.slice(0, MAX_RAG_BLOCK_CHARS)}\n\n[Retrieved context truncated for length.]`;
+        }
+      } catch (ragErr) {
+        console.error(`[chat:${chatReqId}] RAG retrieval failed after ${Date.now() - ragStart}ms:`, ragErr.stack || ragErr.message || ragErr);
+      }
+    } else {
+      if (!openaiKey) console.warn(`[chat:${chatReqId}] OPENAI_API_KEY not set; skipping RAG`);
+      if (!userId) console.warn(`[chat:${chatReqId}] userId missing; skipping RAG`);
     }
 
     // Build Anthropic messages input for messages API
     const baseSystemText = `You are Helia, a warm and supportive AI health companion.
-You have read the user's health documents and should naturally connect the conversation to their documented history whenever relevant.
-If the user mentions anything health-related (for example: doctor visits, therapy, symptoms, medications, labs, diagnoses, treatment plans, or lifestyle concerns), proactively reference useful details from their records without waiting to be asked directly.
-Bring up relevant context like a knowledgeable friend who knows their history, while staying careful and clear.
+You may receive retrieved excerpts from the user's uploaded documents and from NIH MedlinePlus reference material.
+Use document excerpts to personalize the conversation (they may be partial); do not treat them as a complete medical record.
+When you use MedlinePlus / NIH reference excerpts, cite the source in plain language (for example: "According to NIH MedlinePlus ...") so the user can see where general medical information came from.
+If the user mentions anything health-related (for example: doctor visits, therapy, symptoms, medications, labs, diagnoses, treatment plans, or lifestyle concerns), connect to relevant retrieved context when it helps, and otherwise answer helpfully.
 Do not diagnose or make final medical decisions; remind the user to consult their doctor for medical decisions.
 Use plain English, avoid unnecessary jargon, and keep the tone encouraging and practical.`;
-    const systemText = systemPrompt
-      ? `${baseSystemText}\n\nPatient-specific context:\n${systemPrompt}`
-      : baseSystemText;
-    const anthropicMessages = messages.map((m) => ({
-      role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content,
-    }));
+    const systemParts = [baseSystemText];
+    if (systemPrompt && String(systemPrompt).trim()) {
+      systemParts.push(`Additional instructions from the app:\n${systemPrompt}`);
+    }
+    if (ragBlock) {
+      systemParts.push(`Context retrieved for this message (RAG):${ragBlock}`);
+    }
+    let systemText = systemParts.join('\n\n');
+    if (systemText.length > MAX_TOTAL_SYSTEM_CHARS) {
+      console.warn(
+        `[chat:${chatReqId}] system prompt too long (${systemText.length}), truncating to ${MAX_TOTAL_SYSTEM_CHARS}`
+      );
+      systemText = `${systemText.slice(0, MAX_TOTAL_SYSTEM_CHARS)}\n\n[System instructions truncated for length.]`;
+    }
 
-    // Call Anthropic Messages API
+    const anthropicMessages = messages.map((m) => {
+      const role = m.role === 'user' ? 'user' : 'assistant';
+      let content = m.content;
+      if (typeof content !== 'string') {
+        content = content == null ? '' : JSON.stringify(content);
+      }
+      return { role, content };
+    });
+
+    console.log(
+      `[chat:${chatReqId}] calling Anthropic: systemLen=${systemText.length} messages=${anthropicMessages.length} lastRoles=${anthropicMessages
+        .slice(-3)
+        .map((m) => m.role)
+        .join(',')}`
+    );
+
+    const anthStart = Date.now();
     const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -409,18 +514,33 @@ Use plain English, avoid unnecessary jargon, and keep the tone encouraging and p
       }),
     });
 
+    console.log(`[chat:${chatReqId}] Anthropic HTTP status=${anthropicRes.status} after ${Date.now() - anthStart}ms`);
+
     if (!anthropicRes.ok) {
       const errorText = await anthropicRes.text();
+      console.error(`[chat:${chatReqId}] Anthropic error body (first 800 chars):`, errorText.slice(0, 800));
       return res.status(anthropicRes.status).json({ error: `Anthropic API error: ${errorText}` });
     }
 
     const data = await anthropicRes.json();
-    console.log('Anthropic response:', JSON.stringify(data, null, 2));
-    const reply = (data.content && data.content[0] && data.content[0].text) || '';
+    const blocks = Array.isArray(data.content) ? data.content : [];
+    const reply = blocks
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n')
+      .trim();
+    console.log(
+      `[chat:${chatReqId}] Anthropic ok stop_reason=${data.stop_reason} contentBlocks=${blocks.length} replyLen=${reply.length}`
+    );
+    if (!reply && blocks.length) {
+      console.warn(`[chat:${chatReqId}] no text blocks; block types=${blocks.map((b) => b.type).join(',')}`);
+      console.warn(`[chat:${chatReqId}] first block preview:`, JSON.stringify(blocks[0]).slice(0, 500));
+    }
 
+    console.log(`[chat:${chatReqId}] sending JSON reply to client`);
     res.json({ reply });
   } catch (err) {
-    console.error('Chat error:', err);
+    console.error('[chat] unhandled error:', err && err.stack ? err.stack : err);
     res.status(500).json({ error: err.message || 'Internal server error' });
   }
 });
@@ -600,17 +720,22 @@ Debrief details:
 
 // Proactive health insights endpoint
 app.post('/api/health-insights', async (req, res) => {
+  const hiId = `hi-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  console.log(`[health-insights:${hiId}] POST start`);
   try {
     const { userId } = req.body;
     if (!userId) {
+      console.log(`[health-insights:${hiId}] 400 missing userId`);
       return res.status(400).json({ error: 'userId is required' });
     }
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
+      console.error(`[health-insights:${hiId}] ANTHROPIC_API_KEY missing`);
       return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set on server' });
     }
 
+    console.log(`[health-insights:${hiId}] fetching document_texts for user…`);
     const { data: documents, error } = await supabase
       .from('document_texts')
       .select('filename, content')
@@ -618,11 +743,14 @@ app.post('/api/health-insights', async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('[health-insights] Error fetching documents:', error);
+      console.error(`[health-insights:${hiId}] Supabase select error:`, error.code, error.message, error.details || '');
       return res.status(500).json({ error: 'Failed to fetch document texts' });
     }
 
+    console.log(`[health-insights:${hiId}] documents count=${(documents && documents.length) || 0}`);
+
     if (!documents || documents.length === 0) {
+      console.log(`[health-insights:${hiId}] no documents, returning empty insights`);
       return res.json({ insights: [] });
     }
 
@@ -642,6 +770,7 @@ app.post('/api/health-insights', async (req, res) => {
     }
 
     if (chunks.length === 0) {
+      console.log(`[health-insights:${hiId}] no non-empty chunks after bounds`);
       return res.json({ insights: [] });
     }
 
@@ -667,6 +796,10 @@ OUTPUT RULES (IMPORTANT):
 PATIENT DOCUMENTS:
 ${chunks.join('\n\n---\n\n')}`;
 
+    console.log(
+      `[health-insights:${hiId}] calling Anthropic promptLen=${prompt.length} chunks=${chunks.length}`
+    );
+    const t0 = Date.now();
     const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -682,22 +815,42 @@ ${chunks.join('\n\n---\n\n')}`;
       }),
     });
 
+    console.log(`[health-insights:${hiId}] Anthropic status=${anthropicRes.status} elapsed=${Date.now() - t0}ms`);
+
     if (!anthropicRes.ok) {
       const errorText = await anthropicRes.text();
+      console.error(`[health-insights:${hiId}] Anthropic error (first 600 chars):`, errorText.slice(0, 600));
       return res.status(anthropicRes.status).json({ error: `Anthropic API error: ${errorText}` });
     }
 
     const data = await anthropicRes.json();
-    const rawText = (data.content && data.content[0] && data.content[0].text) || '';
-    const insights = parseInsightsFromClaude(rawText);
+    const blocks = Array.isArray(data.content) ? data.content : [];
+    const rawText = blocks
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join('\n')
+      .trim();
+    console.log(
+      `[health-insights:${hiId}] model stop_reason=${data.stop_reason} rawTextLen=${rawText.length}`
+    );
 
+    let insights;
+    try {
+      insights = parseInsightsFromClaude(rawText);
+    } catch (parseErr) {
+      console.error(`[health-insights:${hiId}] parseInsightsFromClaude failed:`, parseErr.message);
+      console.error(`[health-insights:${hiId}] raw model text (first 400 chars):`, rawText.slice(0, 400));
+      return res.status(500).json({ error: 'Could not parse insights from model: ' + parseErr.message });
+    }
+
+    console.log(`[health-insights:${hiId}] success, insights count=${insights.length}`);
     return res.json({ insights });
   } catch (err) {
-    console.error('[health-insights] Error:', err);
+    console.error('[health-insights] unhandled:', err && err.stack ? err.stack : err);
     return res.status(500).json({ error: err.message || 'Failed to generate health insights' });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`MedAdvocate server running on port ${PORT}`);
+  console.log(`Helia server running on port ${PORT}`);
 });
