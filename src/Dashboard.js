@@ -1,9 +1,12 @@
 import React, { useEffect, useState, useRef, useLayoutEffect } from 'react';
+import { flushSync } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
 import { helia, heliaInsightColors } from './heliaTheme';
 import HeliaSidebar from './HeliaSidebar';
+
+const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
 function DocumentSummaryBlock({ text, idPrefix, expanded, onToggle }) {
   const bodyRef = useRef(null);
@@ -98,12 +101,16 @@ export default function Dashboard() {
   const [sending, setSending] = useState(false);
   const [conversationLoading, setConversationLoading] = useState(false);
   const [conversationError, setConversationError] = useState('');
+  const [chatSessions, setChatSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [activeSessionId, setActiveSessionId] = useState(null);
   const [healthInsights, setHealthInsights] = useState([]);
   const [healthInsightsLoading, setHealthInsightsLoading] = useState(false);
   const [healthInsightsError, setHealthInsightsError] = useState('');
   const [latestDocumentFlags, setLatestDocumentFlags] = useState(null);
   const [analyzingUpload, setAnalyzingUpload] = useState(false);
   const fileInputRef = useRef(null);
+  const chatHistoryRef = useRef(null);
   const navigate = useNavigate();
   const [summaryExpanded, setSummaryExpanded] = useState({});
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -170,11 +177,89 @@ export default function Dashboard() {
   useEffect(() => {
     if (user) {
       fetchFiles();
-      loadConversation();
+      initChatSessions();
       fetchHealthInsights();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
+
+  useLayoutEffect(() => {
+    const el = chatHistoryRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
+
+  async function loadMessagesForSession(sessionId) {
+    if (!user?.id || !sessionId) return;
+    setConversationLoading(true);
+    setConversationError('');
+    try {
+      const url = `${HELIA_API_BASE}/api/chat-sessions/${sessionId}/messages?userId=${encodeURIComponent(user.id)}`;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`Could not load messages: ${resp.status} ${text}`);
+      }
+      const data = await resp.json();
+      const rows = Array.isArray(data.messages) ? data.messages : [];
+      const msgs = rows.map((r) => ({
+        id: r.id,
+        role: r.role,
+        content: r.content,
+        created_at: r.created_at,
+      }));
+      setMessages(msgs);
+    } catch (err) {
+      console.error('[Dashboard] loadMessagesForSession:', err);
+      setConversationError(err.message || String(err));
+      setMessages([]);
+    } finally {
+      setConversationLoading(false);
+    }
+  }
+
+  async function initChatSessions() {
+    if (!user?.id) return;
+    setSessionsLoading(true);
+    setConversationError('');
+    try {
+      const resp = await fetch(`${HELIA_API_BASE}/api/chat-sessions/${user.id}`);
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`Could not load conversations: ${resp.status} ${text}`);
+      }
+      const data = await resp.json();
+      const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+      setChatSessions(sessions);
+      if (sessions.length > 0) {
+        setActiveSessionId(sessions[0].id);
+        await loadMessagesForSession(sessions[0].id);
+      } else {
+        setActiveSessionId(null);
+        setMessages([]);
+      }
+    } catch (err) {
+      console.error('[Dashboard] initChatSessions:', err);
+      setConversationError(err.message || String(err));
+      setChatSessions([]);
+      setMessages([]);
+      setActiveSessionId(null);
+    } finally {
+      setSessionsLoading(false);
+    }
+  }
+
+  async function handleSelectChatSession(sessionId) {
+    if (!sessionId || sessionId === activeSessionId) return;
+    setActiveSessionId(sessionId);
+    await loadMessagesForSession(sessionId);
+  }
+
+  function handleNewChat() {
+    setActiveSessionId(null);
+    setMessages([]);
+    setConversationError('');
+  }
 
   // Helper function to show message for 10 seconds
   function showMessage(msg) {
@@ -182,33 +267,6 @@ export default function Dashboard() {
     setTimeout(() => {
       setMessage('');
     }, 10000);
-  }
-
-  // Load conversation history from Supabase
-  async function loadConversation() {
-    if (!user) return;
-    setConversationLoading(true);
-    setConversationError('');
-    const { data, error } = await supabase
-      .from('conversations')
-      .select('id, role, content, created_at')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      setConversationError('Error loading conversation: ' + error.message);
-      setConversationLoading(false);
-      return;
-    }
-
-    const msgs = (data || []).map((r) => ({ role: r.role, content: r.content, created_at: r.created_at }));
-    setMessages(msgs);
-    setConversationLoading(false);
-    // scroll to bottom after loading
-    setTimeout(() => {
-      const el = document.getElementById('chatHistory');
-      if (el) el.scrollTop = el.scrollHeight;
-    }, 50);
   }
 
   // Fetch list of files under the user's folder
@@ -234,7 +292,7 @@ export default function Dashboard() {
     setHealthInsightsLoading(true);
     setHealthInsightsError('');
     try {
-      const resp = await fetch('http://localhost:3001/api/health-insights', {
+      const resp = await fetch(`${HELIA_API_BASE}/api/health-insights`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: user.id }),
@@ -315,7 +373,7 @@ export default function Dashboard() {
         const arrayBuffer = await readFileAsArrayBuffer(file);
         const base64 = arrayBufferToBase64(arrayBuffer);
 
-        const response = await fetch('http://localhost:3001/api/extract-text', {
+        const response = await fetch(`${HELIA_API_BASE}/api/extract-text`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -515,8 +573,132 @@ export default function Dashboard() {
     return { messages: apiMessages, userId };
   }
 
-  // Call backend /api/chat — server sets Helia system prompt and RAG (documents + MedlinePlus)
-  async function sendToAnthropic(conversation, userId) {
+  /** SSE may use CRLF; `\r\n\r\n` does not contain `\n\n`, so normalize before splitting. */
+  function normalizeSseBuffer(s) {
+    return String(s || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  }
+
+  function parseSseEventBlock(block) {
+    const normalized = normalizeSseBuffer(block);
+    const trimmed = normalized.trim();
+    if (!trimmed) return null;
+    let eventName = 'message';
+    const dataParts = [];
+    for (const line of trimmed.split('\n')) {
+      const lineNorm = line.replace(/\r$/, '');
+      if (lineNorm.startsWith('event:')) {
+        eventName = lineNorm.slice(6).trim();
+      } else if (lineNorm.startsWith('data:')) {
+        dataParts.push(lineNorm.slice(5).trimStart());
+      }
+    }
+    const dataStr = dataParts.join('\n');
+    if (!dataStr) return null;
+    try {
+      return { eventName, data: JSON.parse(dataStr) };
+    } catch {
+      return null;
+    }
+  }
+
+  function processSseCarry(carry, onTextDelta, fullTextRef, sseDebug) {
+    let fullText = fullTextRef.text;
+    let sep;
+    while ((sep = carry.indexOf('\n\n')) !== -1) {
+      const rawBlock = carry.slice(0, sep);
+      carry = carry.slice(sep + 2);
+      const parsed = parseSseEventBlock(rawBlock);
+      if (sseDebug && parsed) {
+        const preview =
+          parsed.eventName === 'delta' && parsed.data && typeof parsed.data.text === 'string'
+            ? parsed.data.text.slice(0, 48)
+            : '';
+        console.log('[Helia chat SSE] block length=', rawBlock.length, {
+          event: parsed.eventName,
+          keys: parsed.data && typeof parsed.data === 'object' ? Object.keys(parsed.data) : [],
+          textPreview: preview || '(n/a)',
+        });
+      } else if (sseDebug) {
+        console.log('[Helia chat SSE] block length=', rawBlock.length, 'parse failed', rawBlock.slice(0, 120));
+      }
+      if (!parsed) continue;
+      if (parsed.eventName === 'delta' && parsed.data && typeof parsed.data.text === 'string') {
+        const t = parsed.data.text;
+        fullText += t;
+        onTextDelta(t);
+      } else if (parsed.eventName === 'error') {
+        throw new Error(parsed.data?.message || 'Stream error');
+      } else if (parsed.eventName === 'done') {
+        fullTextRef.text = fullText;
+        return { carry, done: true, fullText };
+      }
+    }
+    fullTextRef.text = fullText;
+    return { carry, done: false, fullText };
+  }
+
+  /**
+   * Reads SSE from /api/chat (event: delta / done / error). Calls onTextDelta per chunk.
+   * Returns the full assistant text for persistence.
+   */
+  async function consumeChatSseStream(body, onTextDelta) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let carry = '';
+    const fullTextRef = { text: '' };
+    const sseDebug = process.env.NODE_ENV === 'development';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          carry = normalizeSseBuffer(carry);
+          if (sseDebug) {
+            console.log('[Helia chat SSE] stream done; flushing carry, length=', carry.length, 'tail=', JSON.stringify(carry.slice(-120)));
+          }
+          const flushed = processSseCarry(carry, onTextDelta, fullTextRef, sseDebug);
+          carry = flushed.carry;
+          if (flushed.done) return fullTextRef.text;
+          if (carry.trim()) {
+            const lastTry = parseSseEventBlock(carry);
+            if (sseDebug) console.log('[Helia chat SSE] trailing carry parse attempt:', lastTry);
+            if (lastTry) {
+              if (lastTry.eventName === 'delta' && lastTry.data?.text) {
+                fullTextRef.text += lastTry.data.text;
+                onTextDelta(lastTry.data.text);
+              } else if (lastTry.eventName === 'done') {
+                return fullTextRef.text;
+              }
+            }
+          }
+          return fullTextRef.text;
+        }
+
+        const chunkStr = decoder.decode(value, { stream: true });
+        if (sseDebug) {
+          console.log('[Helia chat SSE] raw chunk len=', value.byteLength, 'preview=', JSON.stringify(chunkStr.slice(0, 240)));
+        }
+
+        carry += chunkStr;
+        carry = normalizeSseBuffer(carry);
+
+        const flushed = processSseCarry(carry, onTextDelta, fullTextRef, sseDebug);
+        carry = flushed.carry;
+        if (flushed.done) return fullTextRef.text;
+      }
+    } finally {
+      try {
+        reader.releaseLock?.();
+      } catch {
+        /* ignore */
+      }
+    }
+    return fullTextRef.text;
+  }
+
+  /** Stream from backend /api/chat (SSE); Helia system prompt + RAG stay server-side. */
+  async function streamChatFromApi(conversation, userId, onTextDelta) {
     if (!userId) {
       throw new Error('Missing user id; cannot call chat API.');
     }
@@ -528,7 +710,7 @@ export default function Dashboard() {
       throw new Error('Could not serialize chat messages for the server.');
     }
 
-    const resp = await fetch('http://localhost:3001/api/chat', {
+    const resp = await fetch(`${HELIA_API_BASE}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
@@ -539,8 +721,16 @@ export default function Dashboard() {
       throw new Error(`Backend error: ${resp.status} ${text}`);
     }
 
-    const data = await resp.json();
-    return (data.reply || '').toString().trim();
+    const ct = resp.headers.get('content-type') || '';
+    if (!ct.includes('text/event-stream')) {
+      const errText = await resp.text();
+      throw new Error(errText || 'Expected streaming chat response');
+    }
+    if (!resp.body) {
+      throw new Error('No response body from chat stream');
+    }
+
+    return consumeChatSseStream(resp.body, onTextDelta);
   }
 
   // Send message (not an HTML form submit — avoids nested-form / navigation edge cases)
@@ -558,9 +748,38 @@ export default function Dashboard() {
     setSending(true);
 
     try {
+      let sessionId = activeSessionId;
+
+      if (!sessionId) {
+        const createRes = await fetch(`${HELIA_API_BASE}/api/chat-sessions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, firstMessage: content }),
+        });
+        if (!createRes.ok) {
+          const text = await createRes.text();
+          setConversationError('Could not start conversation: ' + text);
+          setSending(false);
+          return;
+        }
+        const created = await createRes.json();
+        const session = created.session;
+        if (!session?.id) {
+          setConversationError('Invalid response when starting conversation.');
+          setSending(false);
+          return;
+        }
+        sessionId = session.id;
+        setActiveSessionId(sessionId);
+        setChatSessions((prev) => {
+          const rest = prev.filter((s) => s.id !== session.id);
+          return [session, ...rest];
+        });
+      }
+
       const { data: insertedUser, error: insertErr } = await supabase
         .from('conversations')
-        .insert([{ user_id: userId, role: 'user', content }])
+        .insert([{ user_id: userId, role: 'user', content, session_id: sessionId }])
         .select()
         .single();
 
@@ -571,38 +790,109 @@ export default function Dashboard() {
       }
 
       const userMsgRecord = insertedUser
-        ? { role: 'user', content: insertedUser.content, created_at: insertedUser.created_at }
+        ? {
+            id: insertedUser.id,
+            role: 'user',
+            content: insertedUser.content,
+            created_at: insertedUser.created_at,
+          }
         : { role: 'user', content, created_at: new Date().toISOString() };
-      const newMessages = [...messages, userMsgRecord];
-      setMessages(newMessages);
 
-      const reply = await sendToAnthropic(newMessages, userId);
+      const conversationForApi = [...messages, userMsgRecord];
 
-      if (reply) {
+      /* Commit user + empty assistant before reading the stream so delta updaters see the assistant row
+         (otherwise React 18 may batch stream updates before this commit and last message is still "user"). */
+      flushSync(() => {
+        setMessages((prev) => [
+          ...prev,
+          userMsgRecord,
+          {
+            role: 'assistant',
+            content: '',
+            created_at: new Date().toISOString(),
+            _streaming: true,
+          },
+        ]);
+      });
+
+      const fullReply = await streamChatFromApi(conversationForApi, userId, (delta) => {
+        setMessages((prev) => {
+          const next = [...prev];
+          let i = next.length - 1;
+          while (i >= 0 && next[i].role !== 'assistant') i -= 1;
+          if (i < 0) return prev;
+          next[i] = {
+            ...next[i],
+            content: (next[i].content || '') + delta,
+          };
+          return next;
+        });
+      });
+
+      const trimmed = (fullReply || '').trim();
+      if (trimmed) {
         const { data: insertedAssistant, error: assistantErr } = await supabase
           .from('conversations')
-          .insert([{ user_id: userId, role: 'assistant', content: reply }])
+          .insert([{ user_id: userId, role: 'assistant', content: trimmed, session_id: sessionId }])
           .select()
           .single();
         if (assistantErr) {
           setConversationError('Error saving assistant message: ' + assistantErr.message);
+        } else if (insertedAssistant) {
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next.length - 1;
+            if (next[last]?.role === 'assistant') {
+              next[last] = {
+                id: insertedAssistant.id,
+                role: 'assistant',
+                content: insertedAssistant.content,
+                created_at: insertedAssistant.created_at,
+              };
+            }
+            return next;
+          });
         }
-        const assistantRecord = insertedAssistant
-          ? { role: 'assistant', content: insertedAssistant.content, created_at: insertedAssistant.created_at }
-          : { role: 'assistant', content: reply, created_at: new Date().toISOString() };
-        setMessages((prev) => [...prev, assistantRecord]);
       } else {
         setConversationError('No response from AI.');
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next.length - 1;
+          if (next[last]?.role === 'assistant' && !(next[last].content || '').trim()) {
+            next.pop();
+          }
+          return next;
+        });
       }
     } catch (err) {
       console.error('[Dashboard] handleSendChat:', err);
       setConversationError('AI error: ' + (err.message || err));
+      setMessages((prev) => {
+        const next = [...prev];
+        const last = next.length - 1;
+        if (next[last]?.role === 'assistant' && !(next[last].content || '').trim()) {
+          next.pop();
+        }
+        return next;
+      });
     }
     setSending(false);
-    setTimeout(() => {
-      const el = document.getElementById('chatHistory');
-      if (el) el.scrollTop = el.scrollHeight;
-    }, 50);
+  }
+
+  function formatSessionListDate(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '';
+      const now = new Date();
+      const opts = { month: 'short', day: 'numeric' };
+      if (d.getFullYear() !== now.getFullYear()) {
+        opts.year = 'numeric';
+      }
+      return d.toLocaleDateString(undefined, opts);
+    } catch {
+      return '';
+    }
   }
 
   return (
@@ -986,126 +1276,281 @@ export default function Dashboard() {
 
           <div
             style={{
-              background: helia.card,
-              padding: 20,
-              borderRadius: helia.radius,
-              border: `1px solid ${helia.border}`,
-              boxShadow: helia.cardShadow,
-              color: helia.body,
               display: 'flex',
-              flexDirection: 'column',
-              minHeight: 400,
+              gap: 16,
+              alignItems: 'stretch',
+              flexWrap: 'wrap',
             }}
           >
-            <div
-              id="chatHistory"
+            <aside
               style={{
-                flex: 1,
-                overflowY: 'auto',
-                padding: '4px 8px 12px',
+                width: 260,
+                flex: '0 0 260px',
+                minWidth: 220,
+                background: helia.card,
+                borderRadius: helia.radius,
+                border: `1px solid ${helia.border}`,
+                boxShadow: helia.cardShadow,
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 12,
+                maxHeight: 560,
               }}
             >
-              {conversationLoading ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: helia.muted, fontSize: 15 }}>
-                  <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
-                  Loading conversation…
-                </div>
-              ) : conversationError ? (
-                <div style={{ color: helia.alert }}>{conversationError}</div>
-              ) : messages && messages.length === 0 ? (
-                <div style={{ color: helia.muted }}>Say hello — ask about your documents or a health question.</div>
-              ) : null}
-
-              {messages && messages.map((m, idx) => (
-                <div key={idx} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                  <div style={{
-                    maxWidth: '78%',
-                    padding: '14px 18px',
-                    borderRadius: helia.radius,
-                    background: m.role === 'user' ? `linear-gradient(145deg, ${helia.sage}, ${helia.forest})` : helia.cream,
-                    color: m.role === 'user' ? '#fff' : helia.body,
-                    border: m.role === 'user' ? 'none' : `1px solid ${helia.border}`,
-                    boxShadow: m.role === 'user' ? helia.cardShadow : 'none',
-                  }}>
-                    <div style={{ lineHeight: 1.5, fontSize: 15 }}>
-                      {m.role === 'assistant'
-                        ? parseSummaryMarkdown((m.content || '').toString(), `chat-msg-${idx}`)
-                        : m.content}
-                    </div>
-                    <div style={{ fontSize: 12, color: m.role === 'user' ? 'rgba(255,255,255,0.85)' : helia.muted, marginTop: 8, textAlign: m.role === 'user' ? 'right' : 'left' }}>{m.created_at ? new Date(m.created_at).toLocaleString() : ''}</div>
+              <div style={{ padding: '14px 14px 10px' }}>
+                <button
+                  type="button"
+                  onClick={handleNewChat}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontWeight: 700,
+                    fontSize: 14,
+                    letterSpacing: '0.02em',
+                    background: helia.sage,
+                    color: '#fff',
+                    border: `1px solid rgba(122, 158, 126, 0.45)`,
+                    borderRadius: helia.radiusSm,
+                    cursor: 'pointer',
+                    fontFamily: helia.font,
+                    boxShadow: helia.cardShadow,
+                  }}
+                >
+                  New Chat
+                </button>
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.07em',
+                  color: helia.muted,
+                  padding: '0 14px 8px',
+                }}
+              >
+                Conversations
+              </div>
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '4px 10px 14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 6,
+                }}
+              >
+                {sessionsLoading ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: helia.muted, fontSize: 14, padding: '8px 6px' }}>
+                    <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
+                    Loading…
                   </div>
-                </div>
-              ))}
-            </div>
+                ) : chatSessions.length === 0 ? (
+                  <div style={{ color: helia.muted, fontSize: 14, padding: '8px 6px', lineHeight: 1.45 }}>
+                    No saved chats yet. Start typing to begin one.
+                  </div>
+                ) : (
+                  chatSessions.map((s) => {
+                    const active = activeSessionId === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          void handleSelectChatSession(s.id);
+                        }}
+                        style={{
+                          textAlign: 'left',
+                          padding: '12px 12px',
+                          borderRadius: helia.radiusSm,
+                          border: `1px solid ${helia.border}`,
+                          borderLeftWidth: active ? 4 : 1,
+                          borderLeftColor: active ? helia.sage : helia.border,
+                          borderLeftStyle: 'solid',
+                          background: active ? helia.sageMuted : helia.cream,
+                          cursor: 'pointer',
+                          fontFamily: helia.font,
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            fontSize: 14,
+                            color: helia.forest,
+                            lineHeight: 1.35,
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {s.title || 'Conversation'}
+                        </div>
+                        <div style={{ fontSize: 12, color: helia.muted, marginTop: 6 }}>
+                          {formatSessionListDate(s.created_at)}
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </aside>
 
             <div
               style={{
+                flex: '1 1 280px',
+                minWidth: 0,
+                background: helia.card,
+                padding: 20,
+                borderRadius: helia.radius,
+                border: `1px solid ${helia.border}`,
+                boxShadow: helia.cardShadow,
+                color: helia.body,
                 display: 'flex',
-                gap: 10,
-                alignItems: 'stretch',
-                marginTop: 4,
-                paddingTop: 14,
-                borderTop: `1px solid ${helia.border}`,
+                flexDirection: 'column',
+                minHeight: 0,
               }}
             >
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    if (!sending && !conversationLoading) {
-                      void handleSendChat();
-                    }
-                  }
-                }}
-                placeholder="Ask about your documents or a health question…"
-                disabled={sending || conversationLoading}
+              <div
+                ref={chatHistoryRef}
+                id="chatHistory"
                 style={{
-                  flex: 1,
-                  minHeight: 48,
-                  padding: '12px 16px',
-                  borderRadius: helia.radiusSm,
-                  border: `1px solid ${helia.border}`,
-                  background: helia.cream,
-                  color: helia.body,
-                  fontSize: 16,
-                  outline: 'none',
+                  height: 'min(400px, 52vh)',
+                  overflowY: 'auto',
+                  padding: '4px 8px 12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 12,
                   boxSizing: 'border-box',
-                  fontFamily: helia.font,
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  void handleSendChat();
-                }}
-                disabled={sending || conversationLoading || !input.trim()}
-                style={{
-                  padding: '12px 22px',
-                  minWidth: 108,
-                  fontWeight: 700,
-                  fontSize: 16,
-                  letterSpacing: '0.02em',
-                  background: sending || conversationLoading || !input.trim() ? helia.sageMuted : helia.sage,
-                  color: '#fff',
-                  border: `1px solid rgba(122, 158, 126, 0.4)`,
-                  borderRadius: helia.radiusSm,
-                  cursor: sending || conversationLoading || !input.trim() ? 'not-allowed' : 'pointer',
-                  boxShadow: sending || conversationLoading ? 'none' : helia.cardShadow,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                  fontFamily: helia.font,
                 }}
               >
-                {sending && <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />}
-                {sending ? 'Sending…' : 'Send'}
-              </button>
+                {conversationLoading ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: helia.muted, fontSize: 15 }}>
+                    <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
+                    Loading conversation…
+                  </div>
+                ) : conversationError ? (
+                  <div style={{ color: helia.alert }}>{conversationError}</div>
+                ) : messages && messages.length === 0 ? (
+                  <div style={{ color: helia.muted }}>
+                    {activeSessionId == null
+                      ? 'New chat — ask about your documents or a health question.'
+                      : 'Say hello — ask about your documents or a health question.'}
+                  </div>
+                ) : null}
+
+                {messages &&
+                  messages.map((m, idx) => (
+                    <div
+                      key={m.id != null ? String(m.id) : `msg-${idx}`}
+                      style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}
+                    >
+                      <div
+                        style={{
+                          maxWidth: '78%',
+                          padding: '14px 18px',
+                          borderRadius: helia.radius,
+                          background:
+                            m.role === 'user' ? `linear-gradient(145deg, ${helia.sage}, ${helia.forest})` : helia.cream,
+                          color: m.role === 'user' ? '#fff' : helia.body,
+                          border: m.role === 'user' ? 'none' : `1px solid ${helia.border}`,
+                          boxShadow: m.role === 'user' ? helia.cardShadow : 'none',
+                        }}
+                      >
+                        <div style={{ lineHeight: 1.5, fontSize: 15 }}>
+                          {m.role === 'assistant'
+                            ? m._streaming ? (
+                                <span style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                  {(m.content || '').toString()}
+                                </span>
+                              ) : (
+                                parseSummaryMarkdown((m.content || '').toString(), `chat-msg-${m.id ?? idx}`)
+                              )
+                            : m.content}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: m.role === 'user' ? 'rgba(255,255,255,0.85)' : helia.muted,
+                            marginTop: 8,
+                            textAlign: m.role === 'user' ? 'right' : 'left',
+                          }}
+                        >
+                          {m.created_at ? new Date(m.created_at).toLocaleString() : ''}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 10,
+                  alignItems: 'stretch',
+                  marginTop: 4,
+                  paddingTop: 14,
+                  borderTop: `1px solid ${helia.border}`,
+                }}
+              >
+                <input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      if (!sending && !conversationLoading && !sessionsLoading) {
+                        void handleSendChat();
+                      }
+                    }
+                  }}
+                  placeholder="Ask about your documents or a health question…"
+                  disabled={sending || conversationLoading || sessionsLoading}
+                  style={{
+                    flex: 1,
+                    minHeight: 48,
+                    padding: '12px 16px',
+                    borderRadius: helia.radiusSm,
+                    border: `1px solid ${helia.border}`,
+                    background: helia.cream,
+                    color: helia.body,
+                    fontSize: 16,
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                    fontFamily: helia.font,
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleSendChat();
+                  }}
+                  disabled={sending || conversationLoading || sessionsLoading || !input.trim()}
+                  style={{
+                    padding: '12px 22px',
+                    minWidth: 108,
+                    fontWeight: 700,
+                    fontSize: 16,
+                    letterSpacing: '0.02em',
+                    background:
+                      sending || conversationLoading || sessionsLoading || !input.trim() ? helia.sageMuted : helia.sage,
+                    color: '#fff',
+                    border: `1px solid rgba(122, 158, 126, 0.4)`,
+                    borderRadius: helia.radiusSm,
+                    cursor:
+                      sending || conversationLoading || sessionsLoading || !input.trim() ? 'not-allowed' : 'pointer',
+                    boxShadow: sending || conversationLoading || sessionsLoading ? 'none' : helia.cardShadow,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    fontFamily: helia.font,
+                  }}
+                >
+                  {sending && <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />}
+                  {sending ? 'Sending…' : 'Send'}
+                </button>
+              </div>
             </div>
           </div>
         </section>

@@ -37,6 +37,92 @@ function withTimeout(promise, ms, label) {
 const MAX_RAG_BLOCK_CHARS = 45000;
 const MAX_TOTAL_SYSTEM_CHARS = 130000;
 
+/** Parse one SSE event block (lines ending with blank line already stripped). */
+function parseSseEventBlock(block) {
+  const trimmed = String(block || '').trim();
+  if (!trimmed) return null;
+  let eventName = 'message';
+  const dataParts = [];
+  for (const line of trimmed.split('\n')) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim();
+    } else if (line.startsWith('data:')) {
+      dataParts.push(line.slice(5).trimStart());
+    }
+  }
+  const dataStr = dataParts.join('\n');
+  if (!dataStr) return null;
+  try {
+    return { eventName, data: JSON.parse(dataStr) };
+  } catch {
+    return null;
+  }
+}
+
+/** Read Anthropic messages SSE stream and forward text deltas to Express response as SSE. */
+async function pipeAnthropicSseToClient(anthropicBody, res, chatReqId) {
+  const reader = anthropicBody.getReader();
+  const decoder = new TextDecoder();
+  let carry = '';
+  let deltaCount = 0;
+  let sawApiError = false;
+
+  try {
+    outer: while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      carry += decoder.decode(value, { stream: true });
+      carry = carry.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+      let sep;
+      while ((sep = carry.indexOf('\n\n')) !== -1) {
+        const rawBlock = carry.slice(0, sep);
+        carry = carry.slice(sep + 2);
+        const parsed = parseSseEventBlock(rawBlock);
+        if (!parsed) continue;
+        const j = parsed.data;
+        if (!j || typeof j !== 'object') continue;
+
+        if (j.type === 'content_block_delta' && j.delta && j.delta.type === 'text_delta' && j.delta.text) {
+          const chunk = JSON.stringify({ text: j.delta.text });
+          res.write(`event: delta\ndata: ${chunk}\n\n`);
+          deltaCount += 1;
+          if (typeof res.flush === 'function') res.flush();
+        }
+
+        if (j.type === 'error' && j.error) {
+          const msg = String(j.error.message || j.error.type || 'Anthropic stream error');
+          console.error(`[chat:${chatReqId}] stream error event:`, msg);
+          res.write(`event: error\ndata: ${JSON.stringify({ message: msg })}\n\n`);
+          if (typeof res.flush === 'function') res.flush();
+          sawApiError = true;
+          break outer;
+        }
+      }
+    }
+
+    if (!res.writableEnded) {
+      res.write(`event: done\ndata: {}\n\n`);
+    }
+    console.log(
+      `[chat:${chatReqId}] stream finished deltaEvents=${deltaCount} apiError=${sawApiError}`
+    );
+  } catch (err) {
+    console.error(`[chat:${chatReqId}] pipe stream error:`, err);
+    if (!res.writableEnded) {
+      res.write(`event: error\ndata: ${JSON.stringify({ message: err.message || 'Stream interrupted' })}\n\n`);
+      res.write(`event: done\ndata: {}\n\n`);
+    }
+  } finally {
+    try {
+      reader.releaseLock?.();
+    } catch (_) {
+      /* ignore */
+    }
+    if (!res.writableEnded) res.end();
+  }
+}
+
 // Parse PDF text in a way that supports both pdf-parse v2 and v1-style exports.
 async function extractPdfText(buffer) {
   const PDFParseClass = pdfParseModule.PDFParse;
@@ -201,6 +287,169 @@ function parseDocumentFlags(rawText) {
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+/** Short chat thread title from the user's first message (3–5 words). */
+async function generateChatSessionTitle(firstMessage) {
+  const raw = String(firstMessage || '').trim();
+  if (!raw) return 'New conversation';
+
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    const words = raw.split(/\s+/).slice(0, 5).join(' ');
+    return words || 'New conversation';
+  }
+
+  const prompt = `Create a very short title for a health chat thread based on the user's first message.
+Rules:
+- 3 to 5 words maximum
+- Title case or sentence case
+- No quotes, no trailing punctuation, no emoji
+- If the message is vague, output a neutral title like "Health question"
+
+User first message:
+${raw.slice(0, 2000)}`;
+
+  const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 40,
+      system: 'You output only the title text, nothing else.',
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+
+  if (!anthropicRes.ok) {
+    const words = raw.split(/\s+/).slice(0, 5).join(' ');
+    return words || 'New conversation';
+  }
+
+  const data = await anthropicRes.json();
+  const blocks = Array.isArray(data.content) ? data.content : [];
+  let title = blocks
+    .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text)
+    .join(' ')
+    .trim()
+    .replace(/^["']|["']$/g, '');
+
+  if (!title) {
+    const words = raw.split(/\s+/).slice(0, 5).join(' ');
+    return words || 'New conversation';
+  }
+
+  const wordList = title.split(/\s+/).filter(Boolean);
+  if (wordList.length > 5) {
+    title = wordList.slice(0, 5).join(' ');
+  }
+  return title.slice(0, 120);
+}
+
+// POST /api/chat-sessions — create session + title from first message
+app.post('/api/chat-sessions', async (req, res) => {
+  try {
+    const { userId, firstMessage } = req.body;
+    if (!userId || !String(firstMessage || '').trim()) {
+      return res.status(400).json({ error: 'userId and firstMessage are required' });
+    }
+
+    const title = await generateChatSessionTitle(firstMessage);
+    const { data, error } = await supabase
+      .from('chat_sessions')
+      .insert([{ user_id: userId, title }])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[chat-sessions] insert error:', error);
+      return res.status(500).json({ error: 'Failed to create session: ' + error.message });
+    }
+
+    return res.json({ session: data });
+  } catch (err) {
+    console.error('[chat-sessions] POST error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to create chat session' });
+  }
+});
+
+// GET /api/chat-sessions/:sessionId/messages — messages for one session (requires userId query for ownership check)
+app.get('/api/chat-sessions/:sessionId/messages', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const userId = req.query.userId;
+    if (!userId || typeof userId !== 'string') {
+      return res.status(400).json({ error: 'userId query parameter is required' });
+    }
+
+    const { data: sessionRow, error: sessionErr } = await supabase
+      .from('chat_sessions')
+      .select('id, user_id')
+      .eq('id', sessionId)
+      .maybeSingle();
+
+    if (sessionErr) {
+      console.error('[chat-sessions/messages] session lookup:', sessionErr);
+      return res.status(500).json({ error: 'Failed to verify session' });
+    }
+    if (!sessionRow || sessionRow.user_id !== userId) {
+      return res.status(403).json({ error: 'Session not found or access denied' });
+    }
+
+    const { data: rows, error } = await supabase
+      .from('conversations')
+      .select('id, role, content, created_at, session_id')
+      .eq('session_id', sessionId)
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('[chat-sessions/messages] select error:', error);
+      return res.status(500).json({ error: 'Failed to load messages: ' + error.message });
+    }
+
+    const messages = (rows || []).map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.content,
+      created_at: r.created_at,
+    }));
+    return res.json({ messages });
+  } catch (err) {
+    console.error('[chat-sessions/messages] error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to load messages' });
+  }
+});
+
+// GET /api/chat-sessions/:userId — list sessions for user (newest first)
+app.get('/api/chat-sessions/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+
+    const { data, error } = await supabase
+      .from('chat_sessions')
+      .select('id, user_id, title, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('[chat-sessions] list error:', error);
+      return res.status(500).json({ error: 'Failed to list sessions: ' + error.message });
+    }
+
+    return res.json({ sessions: data || [] });
+  } catch (err) {
+    console.error('[chat-sessions] GET list error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to list chat sessions' });
+  }
 });
 
 // Extract text endpoint: receive PDF file data from client, parse it, and store in Supabase
@@ -509,6 +758,7 @@ Use plain English, avoid unnecessary jargon, and keep the tone encouraging and p
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 1000,
+        stream: true,
         system: systemText,
         messages: anthropicMessages,
       }),
@@ -522,26 +772,32 @@ Use plain English, avoid unnecessary jargon, and keep the tone encouraging and p
       return res.status(anthropicRes.status).json({ error: `Anthropic API error: ${errorText}` });
     }
 
-    const data = await anthropicRes.json();
-    const blocks = Array.isArray(data.content) ? data.content : [];
-    const reply = blocks
-      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
-      .map((b) => b.text)
-      .join('\n')
-      .trim();
-    console.log(
-      `[chat:${chatReqId}] Anthropic ok stop_reason=${data.stop_reason} contentBlocks=${blocks.length} replyLen=${reply.length}`
-    );
-    if (!reply && blocks.length) {
-      console.warn(`[chat:${chatReqId}] no text blocks; block types=${blocks.map((b) => b.type).join(',')}`);
-      console.warn(`[chat:${chatReqId}] first block preview:`, JSON.stringify(blocks[0]).slice(0, 500));
+    if (!anthropicRes.body) {
+      return res.status(500).json({ error: 'Anthropic returned no response body for streaming' });
     }
 
-    console.log(`[chat:${chatReqId}] sending JSON reply to client`);
-    res.json({ reply });
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.status(200);
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+    console.log(`[chat:${chatReqId}] piping Anthropic SSE to client`);
+    await pipeAnthropicSseToClient(anthropicRes.body, res, chatReqId);
   } catch (err) {
     console.error('[chat] unhandled error:', err && err.stack ? err.stack : err);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Internal server error' });
+    } else if (!res.writableEnded) {
+      try {
+        res.write(`event: error\ndata: ${JSON.stringify({ message: err.message || 'Internal server error' })}\n\n`);
+        res.write(`event: done\ndata: {}\n\n`);
+        res.end();
+      } catch (_) {
+        /* ignore */
+      }
+    }
   }
 });
 
