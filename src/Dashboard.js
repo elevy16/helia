@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef, useLayoutEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
+import { helia, heliaInsightColors } from './heliaTheme';
+import HeliaSidebar from './HeliaSidebar';
 
 function DocumentSummaryBlock({ text, idPrefix, expanded, onToggle }) {
   const bodyRef = useRef(null);
@@ -31,7 +33,7 @@ function DocumentSummaryBlock({ text, idPrefix, expanded, onToggle }) {
       style={{
         marginTop: 12,
         paddingTop: 12,
-        borderTop: '1px solid rgba(106, 158, 106, 0.14)',
+        borderTop: `1px solid ${helia.border}`,
       }}
     >
       <div
@@ -40,7 +42,7 @@ function DocumentSummaryBlock({ text, idPrefix, expanded, onToggle }) {
           fontWeight: 600,
           textTransform: 'uppercase',
           letterSpacing: '0.07em',
-          color: '#7a9a7a',
+          color: helia.muted,
           marginBottom: 8,
         }}
       >
@@ -49,9 +51,9 @@ function DocumentSummaryBlock({ text, idPrefix, expanded, onToggle }) {
       <div
         ref={bodyRef}
         style={{
-          fontSize: 14,
+          fontSize: 15,
           lineHeight: 1.55,
-          color: '#c8dcc8',
+          color: helia.body,
           wordBreak: 'break-word',
           // ~4 lines at 1.55 line-height (line-clamp is unreliable with nested lists)
           ...(expanded
@@ -73,7 +75,7 @@ function DocumentSummaryBlock({ text, idPrefix, expanded, onToggle }) {
             cursor: 'pointer',
             fontSize: 13,
             fontWeight: 600,
-            color: '#8fbc8f',
+            color: helia.sage,
             textDecoration: 'underline',
             textUnderlineOffset: 3,
           }}
@@ -141,38 +143,14 @@ export default function Dashboard() {
   }
 
   function getInsightSeverityColors(severity) {
-    if (severity === 'alert') {
-      return {
-        dot: '#dc6f6f',
-        border: 'rgba(220, 111, 111, 0.45)',
-        bg: 'rgba(64, 26, 26, 0.45)',
-        label: '#f3c4c4',
-      };
-    }
-    if (severity === 'warning') {
-      return {
-        dot: '#d5b562',
-        border: 'rgba(213, 181, 98, 0.42)',
-        bg: 'rgba(65, 52, 22, 0.44)',
-        label: '#efe0b4',
-      };
-    }
-    return {
-      dot: '#78ae78',
-      border: 'rgba(120, 174, 120, 0.4)',
-      bg: 'rgba(33, 60, 33, 0.44)',
-      label: '#cde6cd',
-    };
+    const s = String(severity || 'info').toLowerCase();
+    if (s === 'alert') return heliaInsightColors.alert;
+    if (s === 'warning') return heliaInsightColors.warning;
+    return heliaInsightColors.info;
   }
 
   function getFlagSeverityColors(severity) {
-    if (severity === 'alert') {
-      return { dot: '#dc6f6f', border: 'rgba(220,111,111,0.45)', bg: 'rgba(64,26,26,0.45)', label: '#f3c4c4' };
-    }
-    if (severity === 'warning') {
-      return { dot: '#d5b562', border: 'rgba(213,181,98,0.42)', bg: 'rgba(65,52,22,0.44)', label: '#efe0b4' };
-    }
-    return { dot: '#78ae78', border: 'rgba(120,174,120,0.4)', bg: 'rgba(33,60,33,0.44)', label: '#cde6cd' };
+    return getInsightSeverityColors(severity);
   }
 
   useEffect(() => {
@@ -515,84 +493,45 @@ export default function Dashboard() {
     navigate('/');
   }
 
-  // Send message handler
-  async function handleSend(e) {
-    e.preventDefault();
-    setMessage('');
-    if (!input.trim()) return;
-    const content = input.trim();
-    setInput('');
-    setSending(true);
-
-    try {
-      // Persist user message
-      const { data: insertedUser, error: insertErr } = await supabase.from('conversations').insert([{ user_id: user.id, role: 'user', content }]).select().single();
-      if (insertErr) {
-        setConversationError('Error saving message: ' + insertErr.message);
-      }
-
-      const userMsgRecord = insertedUser ? { role: 'user', content: insertedUser.content, created_at: insertedUser.created_at } : { role: 'user', content, created_at: new Date().toISOString() };
-      const newMessages = [...messages, userMsgRecord];
-      setMessages(newMessages);
-
-      // Send conversation (including newly saved user message) to Anthropic
-      const reply = await sendToAnthropic(newMessages);
-
-      if (reply) {
-        // persist assistant reply
-        const { data: insertedAssistant, error: assistantErr } = await supabase.from('conversations').insert([{ user_id: user.id, role: 'assistant', content: reply }]).select().single();
-        if (assistantErr) {
-          setConversationError('Error saving assistant message: ' + assistantErr.message);
-        }
-        const assistantRecord = insertedAssistant ? { role: 'assistant', content: insertedAssistant.content, created_at: insertedAssistant.created_at } : { role: 'assistant', content: reply, created_at: new Date().toISOString() };
-        setMessages((prev) => [...prev, assistantRecord]);
-      } else {
-        setConversationError('No response from AI.');
-      }
-    } catch (err) {
-      setConversationError('AI error: ' + (err.message || err));
-    }
-    setSending(false);
-    // scroll chat to bottom
-    setTimeout(() => {
-      const el = document.getElementById('chatHistory');
-      if (el) el.scrollTop = el.scrollHeight;
-    }, 50);
+  /** Only role + string content — safe for JSON and matches Anthropic API. */
+  function buildChatApiPayload(conversation, userId) {
+    const apiMessages = (conversation || []).map((m) => {
+      const role = m.role === 'assistant' ? 'assistant' : 'user';
+      const raw = m.content;
+      const content =
+        typeof raw === 'string'
+          ? raw
+          : raw == null
+            ? ''
+            : (() => {
+                try {
+                  return JSON.stringify(raw);
+                } catch {
+                  return String(raw);
+                }
+              })();
+      return { role, content };
+    });
+    return { messages: apiMessages, userId };
   }
 
-  // Call backend /api/chat endpoint which forwards to Anthropic
-  async function sendToAnthropic(conversation) {
-    let baseSystemPrompt = `You are a personal medical AI companion for MedAdvocate. Answer health questions clearly and in plain English, avoid medical jargon, and be warm and supportive. Remind users to consult a real doctor for medical decisions.`;
-    
-    // Fetch user's document texts to include in context
-    let documentContext = '';
-    try {
-      const { data: documents, error } = await supabase
-        .from('document_texts')
-        .select('filename, content')
-        .eq('user_id', user.id);
-      
-      if (error) {
-        console.error('Error fetching documents:', error);
-      } else if (documents && documents.length > 0) {
-        documentContext = '\n\nHere is relevant health information from the user\'s uploaded documents:\n\n';
-        documents.forEach(doc => {
-          documentContext += `From ${doc.filename}:\n${doc.content}\n\n`;
-        });
-      }
-    } catch (err) {
-      console.error('Failed to fetch document context:', err);
+  // Call backend /api/chat — server sets Helia system prompt and RAG (documents + MedlinePlus)
+  async function sendToAnthropic(conversation, userId) {
+    if (!userId) {
+      throw new Error('Missing user id; cannot call chat API.');
     }
-    
-    const systemPrompt = baseSystemPrompt + documentContext;
+    let body;
+    try {
+      body = JSON.stringify(buildChatApiPayload(conversation, userId));
+    } catch (err) {
+      console.error('[Dashboard] chat JSON.stringify failed:', err);
+      throw new Error('Could not serialize chat messages for the server.');
+    }
 
     const resp = await fetch('http://localhost:3001/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messages: conversation,
-        systemPrompt,
-      }),
+      body,
     });
 
     if (!resp.ok) {
@@ -604,64 +543,101 @@ export default function Dashboard() {
     return (data.reply || '').toString().trim();
   }
 
+  // Send message (not an HTML form submit — avoids nested-form / navigation edge cases)
+  async function handleSendChat() {
+    setMessage('');
+    if (!input.trim()) return;
+    if (!user?.id) {
+      setConversationError('You must be signed in to chat.');
+      return;
+    }
+
+    const userId = user.id;
+    const content = input.trim();
+    setInput('');
+    setSending(true);
+
+    try {
+      const { data: insertedUser, error: insertErr } = await supabase
+        .from('conversations')
+        .insert([{ user_id: userId, role: 'user', content }])
+        .select()
+        .single();
+
+      if (insertErr) {
+        setConversationError('Error saving message: ' + insertErr.message);
+        setSending(false);
+        return;
+      }
+
+      const userMsgRecord = insertedUser
+        ? { role: 'user', content: insertedUser.content, created_at: insertedUser.created_at }
+        : { role: 'user', content, created_at: new Date().toISOString() };
+      const newMessages = [...messages, userMsgRecord];
+      setMessages(newMessages);
+
+      const reply = await sendToAnthropic(newMessages, userId);
+
+      if (reply) {
+        const { data: insertedAssistant, error: assistantErr } = await supabase
+          .from('conversations')
+          .insert([{ user_id: userId, role: 'assistant', content: reply }])
+          .select()
+          .single();
+        if (assistantErr) {
+          setConversationError('Error saving assistant message: ' + assistantErr.message);
+        }
+        const assistantRecord = insertedAssistant
+          ? { role: 'assistant', content: insertedAssistant.content, created_at: insertedAssistant.created_at }
+          : { role: 'assistant', content: reply, created_at: new Date().toISOString() };
+        setMessages((prev) => [...prev, assistantRecord]);
+      } else {
+        setConversationError('No response from AI.');
+      }
+    } catch (err) {
+      console.error('[Dashboard] handleSendChat:', err);
+      setConversationError('AI error: ' + (err.message || err));
+    }
+    setSending(false);
+    setTimeout(() => {
+      const el = document.getElementById('chatHistory');
+      if (el) el.scrollTop = el.scrollHeight;
+    }, 50);
+  }
+
   return (
-    <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #1a2e1a, #162616)',
-      color: 'white',
-      fontFamily: 'sans-serif'
-    }}>
-      <header style={{
+    <div
+      style={{
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '20px 36px',
-        borderBottom: '1px solid rgba(255,255,255,0.05)'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center' }}>
-          <div style={{
-            width: 44,
-            height: 44,
-            borderRadius: 8,
-            backgroundColor: '#6a9e6a',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            marginRight: 12,
-            fontWeight: 'bold'
-          }}>MA</div>
-          <h2 style={{ margin: 0 }}>MedAdvocate</h2>
+        minHeight: '100vh',
+        background: helia.cream,
+        color: helia.body,
+        fontFamily: helia.font,
+        fontSize: 17,
+        lineHeight: 1.55,
+      }}
+    >
+      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '28px 36px 8px' }}>
+          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>Dashboard</h1>
+          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>Documents, insights, and chat — all in one calm place.</p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-          <div style={{ color: '#a8c5a0', fontSize: 14, textAlign: 'right', maxWidth: 320 }}>
-            <span style={{ color: '#cde6cd' }}>Welcome back!</span>
-            {user?.email && (
-              <>
-                <span style={{ color: 'rgba(255,255,255,0.25)', margin: '0 8px' }} aria-hidden>|</span>
-                <span style={{ color: '#9fb89f', wordBreak: 'break-all' }} title={user.email}>{user.email}</span>
-              </>
-            )}
-          </div>
-          <button onClick={() => navigate('/appointment-prep')} style={{ padding: '8px 12px', background: '#6a9e6a', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-            Appointment Prep
-          </button>
-          <button onClick={() => navigate('/debrief')} style={{ padding: '8px 12px', background: 'rgba(106, 158, 106, 0.15)', color: '#d8ead8', border: '1px solid rgba(106, 158, 106, 0.45)', borderRadius: 6, cursor: 'pointer' }}>
-            Debrief
-          </button>
-          <button onClick={() => navigate('/timeline')} style={{ padding: '8px 12px', background: 'rgba(106, 158, 106, 0.15)', color: '#d8ead8', border: '1px solid rgba(106, 158, 106, 0.45)', borderRadius: 6, cursor: 'pointer' }}>
-            Timeline
-          </button>
-          <button onClick={handleLogout} style={{ padding: '8px 12px', background: 'transparent', color: '#a8c5a0', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 6, cursor: 'pointer' }}>
-            Logout
-          </button>
-        </div>
-      </header>
 
-      <main style={{ padding: '28px 36px', maxWidth: 960 }}>
-        <section style={{ marginBottom: 20 }}>
-          <h3 style={{ color: '#a8c5a0', marginBottom: 12 }}>My Documents</h3>
+        <main style={{ padding: '12px 36px 48px', maxWidth: 1040, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+        <section style={{ marginBottom: 36 }}>
+          <h2 style={{ color: helia.forest, marginBottom: 14, fontSize: 20, fontWeight: 700 }}>My Documents</h2>
 
-          <div style={{ background: 'rgba(255,255,255,0.03)', padding: 20, borderRadius: 8, color: '#e8f0e8' }}>
+          <div
+            style={{
+              background: helia.card,
+              padding: 24,
+              borderRadius: helia.radius,
+              boxShadow: helia.cardShadow,
+              border: `1px solid ${helia.border}`,
+              color: helia.body,
+            }}
+          >
             <form onSubmit={handleUpload} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               <input
                 ref={fileInputRef}
@@ -669,7 +645,7 @@ export default function Dashboard() {
                 accept="application/pdf"
                 disabled={uploadBusy}
                 onChange={(e) => setSelectedFile(e.target.files[0] || null)}
-                style={{ color: 'white', opacity: uploadBusy ? 0.6 : 1 }}
+                style={{ color: helia.body, opacity: uploadBusy ? 0.6 : 1 }}
               />
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -678,10 +654,10 @@ export default function Dashboard() {
                   disabled={uploadBusy}
                   style={{
                     padding: '10px 18px',
-                    backgroundColor: uploadBusy ? 'rgba(106, 158, 106, 0.45)' : '#6a9e6a',
-                    color: 'white',
+                    backgroundColor: uploadBusy ? helia.sageMuted : helia.sage,
+                    color: '#fff',
                     border: 'none',
-                    borderRadius: 8,
+                    borderRadius: helia.radiusSm,
                     cursor: uploadBusy ? 'not-allowed' : 'pointer',
                     fontWeight: 600,
                     minWidth: 160,
@@ -691,11 +667,11 @@ export default function Dashboard() {
                     gap: 10,
                   }}
                 >
-                  {uploadBusy && <span className="ma-spinner ma-spinner--sm" aria-hidden />}
+                  {uploadBusy && <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />}
                   {uploadBusy ? 'Uploading…' : 'Upload PDF'}
                 </button>
                 {uploadBusy && (
-                  <span style={{ fontSize: 13, color: '#9fb89f' }}>Uploading file and generating summary…</span>
+                  <span style={{ fontSize: 14, color: helia.muted }}>Uploading file and generating summary…</span>
                 )}
               </div>
             </form>
@@ -705,8 +681,8 @@ export default function Dashboard() {
                 style={{
                   marginTop: 12,
                   color: /error|failed|timed out|Please |not allowed|No user|Could not delete|Upload error|Text extraction|Failed to extract|Download error|Logout error/i.test(message)
-                    ? '#ffb3b3'
-                    : '#cde6cd',
+                    ? helia.alert
+                    : helia.forest,
                 }}
               >
                 {message}
@@ -714,28 +690,28 @@ export default function Dashboard() {
             )}
 
             <div style={{ marginTop: 18 }}>
-              <strong style={{ color: '#a8c5a0' }}>Your files</strong>
+              <strong style={{ color: helia.forest, fontSize: 15 }}>Your files</strong>
 
               {(analyzingUpload || latestDocumentFlags) && (
                 <div
                   style={{
                     marginTop: 12,
-                    borderRadius: 12,
-                    padding: '14px 16px',
-                    background: 'rgba(22, 38, 22, 0.55)',
-                    border: '1px solid rgba(106, 158, 106, 0.2)',
+                    borderRadius: helia.radius,
+                    padding: '16px 18px',
+                    background: helia.cream,
+                    border: `1px solid ${helia.border}`,
                   }}
                 >
-                  <div style={{ color: '#cde6cd', fontWeight: 700, marginBottom: 8 }}>
-                    Red Flag Alerts {latestDocumentFlags?.filename ? `- ${latestDocumentFlags.filename}` : ''}
+                  <div style={{ color: helia.forest, fontWeight: 700, marginBottom: 8, fontSize: 15 }}>
+                    Red Flag Alerts {latestDocumentFlags?.filename ? ` — ${latestDocumentFlags.filename}` : ''}
                   </div>
                   {analyzingUpload ? (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#9fb89f', fontSize: 14 }}>
-                      <span className="ma-spinner ma-spinner--sm" aria-hidden />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: helia.muted, fontSize: 14 }}>
+                      <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
                       Analyzing this document for findings to discuss with your doctor...
                     </div>
                   ) : latestDocumentFlags && latestDocumentFlags.flags.length === 0 ? (
-                    <div style={{ color: '#cde6cd', fontSize: 14 }}>
+                    <div style={{ color: helia.muted, fontSize: 15 }}>
                       No immediate concerns found in this document.
                     </div>
                   ) : latestDocumentFlags ? (
@@ -757,12 +733,12 @@ export default function Dashboard() {
                               <span style={{ width: 9, height: 9, borderRadius: '50%', background: colors.dot }} />
                               <span style={{ color: colors.label, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{sev}</span>
                             </div>
-                            <div style={{ color: '#e8f0e8', fontWeight: 600, marginBottom: 4 }}>{flag.title}</div>
-                            {flag.value && <div style={{ color: '#dceadc', fontSize: 13, marginBottom: 5 }}><strong>Value:</strong> {flag.value}</div>}
-                            <div style={{ color: '#c8dcc8', fontSize: 14, lineHeight: 1.5 }}>{flag.explanation}</div>
+                            <div style={{ color: helia.body, fontWeight: 600, marginBottom: 4 }}>{flag.title}</div>
+                            {flag.value && <div style={{ color: helia.muted, fontSize: 13, marginBottom: 5 }}><strong>Value:</strong> {flag.value}</div>}
+                            <div style={{ color: helia.body, fontSize: 14, lineHeight: 1.5 }}>{flag.explanation}</div>
                             {flag.askDoctor && (
-                              <div style={{ marginTop: 8, color: '#d8e8d8', fontSize: 14, lineHeight: 1.45 }}>
-                                <span style={{ color: '#9fb89f', fontWeight: 700 }}>Ask your doctor: </span>
+                              <div style={{ marginTop: 8, color: helia.body, fontSize: 14, lineHeight: 1.45 }}>
+                                <span style={{ color: helia.sage, fontWeight: 700 }}>Ask your doctor: </span>
                                 {flag.askDoctor}
                               </div>
                             )}
@@ -775,23 +751,23 @@ export default function Dashboard() {
               )}
 
               {loadingFiles ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, color: '#9fb89f', fontSize: 14 }}>
-                  <span className="ma-spinner ma-spinner--sm" aria-hidden />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, color: helia.muted, fontSize: 14 }}>
+                  <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
                   Loading your documents…
                 </div>
               ) : files.length === 0 ? (
-                <div style={{ marginTop: 8 }}>No files uploaded yet.</div>
+                <div style={{ marginTop: 8, color: helia.muted }}>No files uploaded yet.</div>
               ) : (
                 <div style={{ marginTop: 12, display: 'grid', gap: 14 }}>
                   {files.map((f) => (
                     <div
                       key={getFileRowKey(f, user.id)}
                       style={{
-                        borderRadius: 12,
-                        padding: '16px 18px',
-                        background: 'rgba(22, 38, 22, 0.55)',
-                        border: '1px solid rgba(106, 158, 106, 0.2)',
-                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.14)',
+                        borderRadius: helia.radius,
+                        padding: '20px 22px',
+                        background: helia.card,
+                        border: `1px solid ${helia.border}`,
+                        boxShadow: helia.cardShadow,
                       }}
                     >
                       <div
@@ -812,10 +788,10 @@ export default function Dashboard() {
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
-                              background: 'linear-gradient(160deg, #2d4a2d, #1a301a)',
-                              borderRadius: 10,
+                              background: `linear-gradient(145deg, ${helia.sage}, ${helia.forest})`,
+                              borderRadius: helia.radiusSm,
                               fontSize: 22,
-                              border: '1px solid rgba(106, 158, 106, 0.22)',
+                              border: `1px solid ${helia.border}`,
                             }}
                           >
                             📄
@@ -824,8 +800,8 @@ export default function Dashboard() {
                             <div
                               style={{
                                 fontWeight: 600,
-                                fontSize: 15,
-                                color: '#e8f0e8',
+                                fontSize: 16,
+                                color: helia.forest,
                                 letterSpacing: '0.02em',
                                 lineHeight: 1.35,
                               }}
@@ -849,8 +825,8 @@ export default function Dashboard() {
                               <div
                                 style={{
                                   marginTop: 10,
-                                  fontSize: 13,
-                                  color: '#7a957a',
+                                  fontSize: 14,
+                                  color: helia.muted,
                                   fontStyle: 'italic',
                                 }}
                               >
@@ -874,12 +850,12 @@ export default function Dashboard() {
                             onClick={() => handleDownload(resolveDocumentStoragePath(f, user.id), f.filename)}
                             style={{
                               padding: '8px 14px',
-                              fontSize: 13,
+                              fontSize: 14,
                               fontWeight: 600,
-                              background: 'rgba(106, 158, 106, 0.12)',
-                              color: '#d4ead4',
-                              border: '1px solid rgba(106, 158, 106, 0.45)',
-                              borderRadius: 8,
+                              background: helia.sageMuted,
+                              color: helia.forest,
+                              border: `1px solid rgba(122, 158, 126, 0.45)`,
+                              borderRadius: helia.radiusSm,
                               cursor: deletingPath === getFileRowKey(f, user.id) || uploadBusy ? 'not-allowed' : 'pointer',
                               opacity: deletingPath === getFileRowKey(f, user.id) ? 0.55 : 1,
                               minWidth: 108,
@@ -893,12 +869,12 @@ export default function Dashboard() {
                             onClick={() => handleDeleteDocument(f)}
                             style={{
                               padding: '8px 14px',
-                              fontSize: 13,
+                              fontSize: 14,
                               fontWeight: 600,
-                              background: 'rgba(180, 90, 90, 0.08)',
-                              color: '#e8b4b4',
-                              border: '1px solid rgba(220, 130, 130, 0.45)',
-                              borderRadius: 8,
+                              background: helia.alertBg,
+                              color: helia.alert,
+                              border: '1px solid rgba(192, 57, 43, 0.35)',
+                              borderRadius: helia.radiusSm,
                               cursor: deletingPath === getFileRowKey(f, user.id) || uploadBusy ? 'not-allowed' : 'pointer',
                               minWidth: 108,
                               display: 'inline-flex',
@@ -908,7 +884,7 @@ export default function Dashboard() {
                             }}
                           >
                             {deletingPath === getFileRowKey(f, user.id) && (
-                              <span className="ma-spinner ma-spinner--sm" aria-hidden />
+                              <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
                             )}
                             {deletingPath === getFileRowKey(f, user.id) ? 'Deleting…' : 'Delete'}
                           </button>
@@ -922,35 +898,35 @@ export default function Dashboard() {
           </div>
         </section>
 
-        <section style={{ marginBottom: 20 }}>
-          <h3 style={{ color: '#a8c5a0', marginBottom: 12 }}>Health Insights</h3>
+        <section style={{ marginBottom: 36 }}>
+          <h2 style={{ color: helia.forest, marginBottom: 14, fontSize: 20, fontWeight: 700 }}>Health Insights</h2>
 
           <div
             style={{
-              background: 'rgba(22, 38, 22, 0.5)',
-              padding: 18,
-              borderRadius: 12,
-              border: '1px solid rgba(106, 158, 106, 0.18)',
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.12)',
-              color: '#e8f0e8',
+              background: helia.card,
+              padding: 24,
+              borderRadius: helia.radius,
+              border: `1px solid ${helia.border}`,
+              boxShadow: helia.cardShadow,
+              color: helia.body,
             }}
           >
             {healthInsightsLoading ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#9fb89f', fontSize: 14 }}>
-                <span className="ma-spinner ma-spinner--sm" aria-hidden />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: helia.muted, fontSize: 15 }}>
+                <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
                 Generating personalized insights from your documents...
               </div>
             ) : healthInsightsError ? (
-              <div style={{ color: '#ffb3b3', fontSize: 14 }}>{healthInsightsError}</div>
+              <div style={{ color: helia.alert, fontSize: 15 }}>{healthInsightsError}</div>
             ) : healthInsights.length === 0 ? (
               <div
                 style={{
-                  color: '#a8c5a0',
-                  fontSize: 14,
-                  background: 'rgba(255,255,255,0.02)',
-                  border: '1px dashed rgba(106, 158, 106, 0.25)',
-                  padding: 14,
-                  borderRadius: 10,
+                  color: helia.muted,
+                  fontSize: 15,
+                  background: helia.cream,
+                  border: `1px dashed ${helia.border}`,
+                  padding: 16,
+                  borderRadius: helia.radiusSm,
                 }}
               >
                 Upload your first document to get personalized health insights.
@@ -985,15 +961,15 @@ export default function Dashboard() {
                           {sev}
                         </span>
                       </div>
-                      <div style={{ color: '#e8f0e8', fontWeight: 600, fontSize: 15, marginBottom: 6 }}>
+                      <div style={{ color: helia.forest, fontWeight: 600, fontSize: 16, marginBottom: 6 }}>
                         {insight.title}
                       </div>
-                      <div style={{ color: '#c8dcc8', fontSize: 14, lineHeight: 1.55 }}>
+                      <div style={{ color: helia.body, fontSize: 15, lineHeight: 1.55 }}>
                         {insight.description}
                       </div>
                       {insight.actionSuggestion && (
-                        <div style={{ marginTop: 10, color: '#d8e8d8', fontSize: 14, lineHeight: 1.5 }}>
-                          <span style={{ color: '#9fb89f', fontWeight: 700 }}>Discuss with your doctor: </span>
+                        <div style={{ marginTop: 10, color: helia.body, fontSize: 15, lineHeight: 1.5 }}>
+                          <span style={{ color: helia.sage, fontWeight: 700 }}>Discuss with your doctor: </span>
                           {insight.actionSuggestion}
                         </div>
                       )}
@@ -1006,19 +982,19 @@ export default function Dashboard() {
         </section>
 
         <section>
-          <h3 style={{ color: '#a8c5a0', marginBottom: 12 }}>Chat with AI</h3>
+          <h2 style={{ color: helia.forest, marginBottom: 14, fontSize: 20, fontWeight: 700 }}>Chat with Helia</h2>
 
           <div
             style={{
-              background: 'rgba(22, 38, 22, 0.5)',
-              padding: 16,
-              borderRadius: 12,
-              border: '1px solid rgba(106, 158, 106, 0.18)',
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.12)',
-              color: '#e8f0e8',
+              background: helia.card,
+              padding: 20,
+              borderRadius: helia.radius,
+              border: `1px solid ${helia.border}`,
+              boxShadow: helia.cardShadow,
+              color: helia.body,
               display: 'flex',
               flexDirection: 'column',
-              height: 400,
+              minHeight: 400,
             }}
           >
             <div
@@ -1033,95 +1009,108 @@ export default function Dashboard() {
               }}
             >
               {conversationLoading ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#9fb89f', fontSize: 14 }}>
-                  <span className="ma-spinner ma-spinner--sm" aria-hidden />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: helia.muted, fontSize: 15 }}>
+                  <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
                   Loading conversation…
                 </div>
               ) : conversationError ? (
-                <div style={{ color: '#ffb3b3' }}>{conversationError}</div>
+                <div style={{ color: helia.alert }}>{conversationError}</div>
               ) : messages && messages.length === 0 ? (
-                <div style={{ color: '#9fb89f' }}>Say hello — ask about your documents or a health question.</div>
+                <div style={{ color: helia.muted }}>Say hello — ask about your documents or a health question.</div>
               ) : null}
 
               {messages && messages.map((m, idx) => (
                 <div key={idx} style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}>
                   <div style={{
                     maxWidth: '78%',
-                    padding: '12px 16px',
-                    borderRadius: 12,
-                    background: m.role === 'user' ? 'linear-gradient(145deg, #5f925f, #6a9e6a)' : 'rgba(255,255,255,0.04)',
-                    color: m.role === 'user' ? 'white' : '#e8f0e8',
-                    border: m.role === 'user' ? 'none' : '1px solid rgba(106, 158, 106, 0.12)',
-                    boxShadow: m.role === 'user' ? '0 2px 10px rgba(0,0,0,0.12)' : 'none',
+                    padding: '14px 18px',
+                    borderRadius: helia.radius,
+                    background: m.role === 'user' ? `linear-gradient(145deg, ${helia.sage}, ${helia.forest})` : helia.cream,
+                    color: m.role === 'user' ? '#fff' : helia.body,
+                    border: m.role === 'user' ? 'none' : `1px solid ${helia.border}`,
+                    boxShadow: m.role === 'user' ? helia.cardShadow : 'none',
                   }}>
                     <div style={{ lineHeight: 1.5, fontSize: 15 }}>
                       {m.role === 'assistant'
                         ? parseSummaryMarkdown((m.content || '').toString(), `chat-msg-${idx}`)
                         : m.content}
                     </div>
-                    <div style={{ fontSize: 11, color: m.role === 'user' ? 'rgba(255,255,255,0.75)' : '#8a9f8a', marginTop: 8, textAlign: m.role === 'user' ? 'right' : 'left' }}>{m.created_at ? new Date(m.created_at).toLocaleString() : ''}</div>
+                    <div style={{ fontSize: 12, color: m.role === 'user' ? 'rgba(255,255,255,0.85)' : helia.muted, marginTop: 8, textAlign: m.role === 'user' ? 'right' : 'left' }}>{m.created_at ? new Date(m.created_at).toLocaleString() : ''}</div>
                   </div>
                 </div>
               ))}
             </div>
 
-            <form
-              onSubmit={handleSend}
+            <div
               style={{
                 display: 'flex',
                 gap: 10,
                 alignItems: 'stretch',
                 marginTop: 4,
                 paddingTop: 14,
-                borderTop: '1px solid rgba(106, 158, 106, 0.14)',
+                borderTop: `1px solid ${helia.border}`,
               }}
             >
               <input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!sending && !conversationLoading) {
+                      void handleSendChat();
+                    }
+                  }
+                }}
                 placeholder="Ask about your documents or a health question…"
                 disabled={sending || conversationLoading}
                 style={{
                   flex: 1,
-                  minHeight: 46,
+                  minHeight: 48,
                   padding: '12px 16px',
-                  borderRadius: 10,
-                  border: '1px solid rgba(106, 158, 106, 0.28)',
-                  background: 'rgba(0, 0, 0, 0.22)',
-                  color: '#e8f0e8',
-                  fontSize: 15,
+                  borderRadius: helia.radiusSm,
+                  border: `1px solid ${helia.border}`,
+                  background: helia.cream,
+                  color: helia.body,
+                  fontSize: 16,
                   outline: 'none',
                   boxSizing: 'border-box',
+                  fontFamily: helia.font,
                 }}
               />
               <button
-                type="submit"
+                type="button"
+                onClick={() => {
+                  void handleSendChat();
+                }}
                 disabled={sending || conversationLoading || !input.trim()}
                 style={{
                   padding: '12px 22px',
                   minWidth: 108,
                   fontWeight: 700,
-                  fontSize: 15,
+                  fontSize: 16,
                   letterSpacing: '0.02em',
-                  background: sending || conversationLoading || !input.trim() ? 'rgba(106, 158, 106, 0.35)' : 'linear-gradient(180deg, #78ae78, #5d8f5d)',
-                  color: 'white',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  borderRadius: 10,
+                  background: sending || conversationLoading || !input.trim() ? helia.sageMuted : helia.sage,
+                  color: '#fff',
+                  border: `1px solid rgba(122, 158, 126, 0.4)`,
+                  borderRadius: helia.radiusSm,
                   cursor: sending || conversationLoading || !input.trim() ? 'not-allowed' : 'pointer',
-                  boxShadow: sending || conversationLoading ? 'none' : '0 2px 8px rgba(0,0,0,0.2)',
+                  boxShadow: sending || conversationLoading ? 'none' : helia.cardShadow,
                   display: 'inline-flex',
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: 8,
+                  fontFamily: helia.font,
                 }}
               >
-                {sending && <span className="ma-spinner ma-spinner--sm" aria-hidden style={{ borderTopColor: 'rgba(255,255,255,0.85)' }} />}
+                {sending && <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />}
                 {sending ? 'Sending…' : 'Send'}
               </button>
-            </form>
+            </div>
           </div>
         </section>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from './supabaseClient';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
+import { helia } from './heliaTheme';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -14,43 +15,139 @@ export default function Login() {
     setError(null);
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { error: signErr } = await supabase.auth.signInWithPassword({ email, password });
 
     setLoading(false);
 
-    if (error) {
-      setError(error.message);
+    if (signErr) {
+      setError(signErr.message);
       return;
     }
 
-    // On success, navigate to dashboard
     navigate('/dashboard');
   };
 
+  const inputStyle = {
+    width: '100%',
+    boxSizing: 'border-box',
+    padding: '14px 16px',
+    marginBottom: 4,
+    borderRadius: helia.radiusSm,
+    border: `1px solid ${helia.border}`,
+    background: helia.cream,
+    color: helia.body,
+    fontSize: 16,
+    fontFamily: helia.font,
+    outline: 'none',
+  };
+
   return (
-    <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #1a2e1a, #162616)',
-      color: 'white',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: 'sans-serif'
-    }}>
-      <form onSubmit={handleSubmit} style={{ background: 'rgba(255,255,255,0.03)', padding: 24, borderRadius: 8, width: 360 }}>
-        <h2 style={{ marginTop: 0 }}>Log In</h2>
-        <label style={{ display: 'block', marginBottom: 8, color: '#a8c5a0' }}>Email</label>
-        <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required style={{ width: '100%', padding: 8, marginBottom: 12, borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)', background: 'transparent', color: 'white' }} />
+    <div
+      style={{
+        minHeight: '100vh',
+        background: helia.cream,
+        color: helia.body,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: helia.font,
+        fontSize: 17,
+        padding: 24,
+        boxSizing: 'border-box',
+      }}
+    >
+      <div
+        style={{
+          width: '100%',
+          maxWidth: 420,
+          background: helia.card,
+          padding: 36,
+          borderRadius: helia.radius,
+          boxShadow: helia.cardShadow,
+          border: `1px solid ${helia.border}`,
+        }}
+      >
+        <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div
+            style={{
+              display: 'inline-flex',
+              width: 48,
+              height: 48,
+              borderRadius: 12,
+              background: `linear-gradient(145deg, ${helia.sage}, ${helia.forest})`,
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#fff',
+              fontWeight: 800,
+              fontSize: 20,
+              marginBottom: 12,
+            }}
+          >
+            H
+          </div>
+          <h1 style={{ margin: 0, fontSize: 26, fontWeight: 800, color: helia.forest }}>Welcome back</h1>
+          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 15 }}>Log in to Helia</p>
+        </div>
 
-        <label style={{ display: 'block', marginBottom: 8, color: '#a8c5a0' }}>Password</label>
-        <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" required style={{ width: '100%', padding: 8, marginBottom: 12, borderRadius: 6, border: '1px solid rgba(255,255,255,0.06)', background: 'transparent', color: 'white' }} />
+        <form onSubmit={handleSubmit}>
+          <label style={{ display: 'block', marginBottom: 8, color: helia.forest, fontWeight: 600, fontSize: 14 }}>
+            Email
+          </label>
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            type="email"
+            required
+            style={{ ...inputStyle, marginBottom: 18 }}
+          />
 
-        {error && <div style={{ color: '#ffb3b3', marginBottom: 12 }}>{error}</div>}
+          <label style={{ display: 'block', marginBottom: 8, color: helia.forest, fontWeight: 600, fontSize: 14 }}>
+            Password
+          </label>
+          <input
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            type="password"
+            required
+            style={{ ...inputStyle, marginBottom: 20 }}
+          />
 
-        <button type="submit" disabled={loading} style={{ width: '100%', padding: 10, backgroundColor: '#6a9e6a', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-          {loading ? 'Signing in...' : 'Sign In'}
-        </button>
-      </form>
+          {error && (
+            <div style={{ color: helia.alert, marginBottom: 16, fontSize: 15 }}>{error}</div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              width: '100%',
+              padding: 14,
+              backgroundColor: loading ? helia.sageMuted : helia.sage,
+              color: '#fff',
+              border: 'none',
+              borderRadius: helia.radiusSm,
+              cursor: loading ? 'not-allowed' : 'pointer',
+              fontWeight: 700,
+              fontSize: 17,
+              fontFamily: helia.font,
+            }}
+          >
+            {loading ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+
+        <p style={{ marginTop: 24, textAlign: 'center', color: helia.muted, fontSize: 15 }}>
+          New to Helia?{' '}
+          <Link to="/signup" style={{ color: helia.forest, fontWeight: 700 }}>
+            Create an account
+          </Link>
+        </p>
+        <p style={{ marginTop: 12, textAlign: 'center' }}>
+          <Link to="/" style={{ color: helia.muted, fontSize: 14 }}>
+            ← Back to home
+          </Link>
+        </p>
+      </div>
     </div>
   );
 }

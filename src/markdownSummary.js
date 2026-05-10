@@ -1,12 +1,13 @@
 import React from 'react';
 
+/* Light-surface typography (Helia cards / cream UI) */
 const HEADING_STYLES = {
-  1: { fontSize: 22, fontWeight: 700, color: '#d4ead4', margin: '18px 0 10px', lineHeight: 1.25 },
-  2: { fontSize: 19, fontWeight: 650, color: '#cde6cd', margin: '16px 0 8px', lineHeight: 1.3 },
-  3: { fontSize: 17, fontWeight: 600, color: '#c5d9c5', margin: '14px 0 8px', lineHeight: 1.35 },
-  4: { fontSize: 15, fontWeight: 600, color: '#b8d4b8', margin: '12px 0 6px', lineHeight: 1.4 },
-  5: { fontSize: 14, fontWeight: 600, color: '#a8c5a0', margin: '10px 0 6px', lineHeight: 1.4 },
-  6: { fontSize: 13, fontWeight: 600, color: '#9fb89f', margin: '8px 0 4px', lineHeight: 1.45 },
+  1: { fontSize: 24, fontWeight: 700, color: '#2d5a27', margin: '18px 0 10px', lineHeight: 1.25 },
+  2: { fontSize: 21, fontWeight: 650, color: '#2d5a27', margin: '16px 0 8px', lineHeight: 1.3 },
+  3: { fontSize: 19, fontWeight: 600, color: '#2d5a27', margin: '14px 0 8px', lineHeight: 1.35 },
+  4: { fontSize: 17, fontWeight: 600, color: '#2d5a27', margin: '12px 0 6px', lineHeight: 1.4 },
+  5: { fontSize: 16, fontWeight: 600, color: '#3d6a35', margin: '10px 0 6px', lineHeight: 1.4 },
+  6: { fontSize: 15, fontWeight: 600, color: '#7a7a6e', margin: '8px 0 4px', lineHeight: 1.45 },
 };
 
 /** Inline **bold** / __bold__ → React nodes */
@@ -21,7 +22,7 @@ function parseBoldInline(line, keyPrefix) {
       out.push(line.slice(last, m.index));
     }
     out.push(
-      <strong key={`${keyPrefix}-b-${n++}`} style={{ color: '#eef5ee', fontWeight: 600 }}>
+      <strong key={`${keyPrefix}-b-${n++}`} style={{ color: '#2d5a27', fontWeight: 600 }}>
         {m[1] || m[2]}
       </strong>
     );
@@ -95,7 +96,7 @@ export function parseSummaryMarkdown(text, idPrefix) {
             margin: '4px 0 8px',
             paddingLeft: 18,
             listStyleType: 'disc',
-            color: '#c8dcc8',
+            color: '#2c2c2c',
           }}
         >
           {items.map((item, j) => (
@@ -128,7 +129,7 @@ export function parseSummaryMarkdown(text, idPrefix) {
             margin: '4px 0 8px',
             paddingLeft: 20,
             listStyleType: 'decimal',
-            color: '#c8dcc8',
+            color: '#2c2c2c',
           }}
         >
           {items.map((item, j) => (
@@ -154,7 +155,7 @@ export function parseSummaryMarkdown(text, idPrefix) {
     const merged = para.join(' ');
     const k = blockKey++;
     blocks.push(
-      <p key={`${idPrefix}-p-${k}`} style={{ margin: '4px 0 8px', lineHeight: 1.55, color: '#c8dcc8' }}>
+      <p key={`${idPrefix}-p-${k}`} style={{ margin: '4px 0 8px', lineHeight: 1.55, color: '#2c2c2c' }}>
         {parseBoldInline(merged, `${idPrefix}-p-${k}`)}
       </p>
     );
