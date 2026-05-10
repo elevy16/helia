@@ -50,6 +50,8 @@ export default function HeliaSidebar({ userEmail, onLogout }) {
         {[
           { to: '/dashboard', label: 'Dashboard' },
           { to: '/timeline', label: 'Timeline' },
+          { to: '/symptoms', label: 'Symptom Tracker' },
+          { to: '/medications', label: 'Medication Tracker' },
           { to: '/appointment-prep', label: 'Appointment Prep' },
           { to: '/debrief', label: 'Appointment Debrief' },
         ].map(({ to, label }) => (

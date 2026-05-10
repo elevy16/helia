@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
-import HeliaSubpageChrome from './HeliaSubpageChrome';
+import HeliaSidebar from './HeliaSidebar';
 import { helia } from './heliaTheme';
+
+const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
 export default function AppointmentDebrief() {
   const [user, setUser] = useState(null);
@@ -16,6 +19,12 @@ export default function AppointmentDebrief() {
   const [latestSummary, setLatestSummary] = useState('');
   const [debriefs, setDebriefs] = useState([]);
   const [loadingDebriefs, setLoadingDebriefs] = useState(true);
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    navigate('/');
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -68,7 +77,7 @@ export default function AppointmentDebrief() {
 
     setSaving(true);
     try {
-      const resp = await fetch('http://localhost:3001/api/save-debrief', {
+      const resp = await fetch(`${HELIA_API_BASE}/api/save-debrief`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -116,11 +125,29 @@ export default function AppointmentDebrief() {
   };
 
   return (
-    <HeliaSubpageChrome title="Appointment Debrief">
-      <p style={{ color: helia.muted, marginTop: 0, marginBottom: 24, fontSize: 17 }}>
-        Capture what happened at your visit and get a clear AI summary you can revisit.
-      </p>
+    <div
+      style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: helia.cream,
+        color: helia.body,
+        fontFamily: helia.font,
+        fontSize: 17,
+        lineHeight: 1.55,
+      }}
+    >
+      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '28px 36px 8px' }}>
+          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
+            Appointment debrief
+          </h1>
+          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
+            Capture what happened at your visit and get a clear AI summary you can revisit.
+          </p>
+        </div>
 
+        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
       <form
         onSubmit={handleSubmit}
         style={{
@@ -275,6 +302,8 @@ export default function AppointmentDebrief() {
           </div>
         )}
       </section>
-    </HeliaSubpageChrome>
+        </main>
+      </div>
+    </div>
   );
 }

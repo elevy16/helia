@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
-import HeliaSubpageChrome from './HeliaSubpageChrome';
+import HeliaSidebar from './HeliaSidebar';
 import { helia, heliaInsightColors } from './heliaTheme';
 
 function parseFlags(flagsValue) {
@@ -25,10 +26,17 @@ function severityColors(sevRaw) {
 }
 
 export default function Timeline() {
+  const [user, setUser] = useState(null);
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState({});
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    navigate('/');
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -36,6 +44,7 @@ export default function Timeline() {
       const { data } = await supabase.auth.getUser();
       if (!mounted) return;
       const u = data.user || null;
+      setUser(u);
       if (!u) {
         setLoading(false);
         return;
@@ -66,12 +75,30 @@ export default function Timeline() {
   }, [entries]);
 
   return (
-    <HeliaSubpageChrome title="Timeline">
-      <p style={{ color: helia.muted, marginTop: 0, marginBottom: 24, fontSize: 17 }}>
-        Your documents in order — summaries and discussion points at a glance.
-      </p>
+    <div
+      style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: helia.cream,
+        color: helia.body,
+        fontFamily: helia.font,
+        fontSize: 17,
+        lineHeight: 1.55,
+      }}
+    >
+      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '28px 36px 8px' }}>
+          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
+            Timeline
+          </h1>
+          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
+            Your documents in order — summaries and discussion points at a glance.
+          </p>
+        </div>
 
-      <h2 style={{ color: helia.forest, marginBottom: 16, fontSize: 20, fontWeight: 700 }}>Your document timeline</h2>
+        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+      <h2 style={{ color: helia.forest, marginTop: 0, marginBottom: 16, fontSize: 20, fontWeight: 700 }}>Your document timeline</h2>
 
       {loading ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, color: helia.muted }}>
@@ -234,6 +261,8 @@ export default function Timeline() {
           })}
         </div>
       )}
-    </HeliaSubpageChrome>
+        </main>
+      </div>
+    </div>
   );
 }

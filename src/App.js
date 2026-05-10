@@ -7,6 +7,8 @@ import RequireAuth from './RequireAuth';
 import AppointmentPrep from './AppointmentPrep';
 import Timeline from './Timeline';
 import AppointmentDebrief from './AppointmentDebrief';
+import SymptomTracker from './SymptomTracker';
+import MedicationTracker from './MedicationTracker';
 import { helia } from './heliaTheme';
 
 function Home() {
@@ -132,6 +134,8 @@ function App() {
         <Route path="/appointment-prep" element={<RequireAuth><AppointmentPrep /></RequireAuth>} />
         <Route path="/debrief" element={<RequireAuth><AppointmentDebrief /></RequireAuth>} />
         <Route path="/timeline" element={<RequireAuth><Timeline /></RequireAuth>} />
+        <Route path="/symptoms" element={<RequireAuth><SymptomTracker /></RequireAuth>} />
+        <Route path="/medications" element={<RequireAuth><MedicationTracker /></RequireAuth>} />
       </Routes>
     </Router>
   );

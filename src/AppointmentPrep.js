@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
-import HeliaSubpageChrome from './HeliaSubpageChrome';
+import HeliaSidebar from './HeliaSidebar';
 import { helia } from './heliaTheme';
+
+const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
 export default function AppointmentPrep() {
   const [user, setUser] = useState(null);
@@ -11,6 +14,12 @@ export default function AppointmentPrep() {
   const [prepSummary, setPrepSummary] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    navigate('/');
+  }
 
   useEffect(() => {
     async function fetchUser() {
@@ -31,7 +40,7 @@ export default function AppointmentPrep() {
     setPrepSummary('');
 
     try {
-      const response = await fetch('http://localhost:3001/api/appointment-prep', {
+      const response = await fetch(`${HELIA_API_BASE}/api/appointment-prep`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -68,11 +77,29 @@ export default function AppointmentPrep() {
   };
 
   return (
-    <HeliaSubpageChrome title="Appointment Prep">
-      <p style={{ color: helia.muted, marginTop: 0, marginBottom: 28, fontSize: 17 }}>
-        Prepare for your visit with a personalized summary based on your records.
-      </p>
+    <div
+      style={{
+        display: 'flex',
+        minHeight: '100vh',
+        background: helia.cream,
+        color: helia.body,
+        fontFamily: helia.font,
+        fontSize: 17,
+        lineHeight: 1.55,
+      }}
+    >
+      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '28px 36px 8px' }}>
+          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
+            Appointment prep
+          </h1>
+          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
+            Prepare for your visit with a personalized summary based on your records.
+          </p>
+        </div>
 
+        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
       <form
         onSubmit={handleSubmit}
         style={{
@@ -195,6 +222,8 @@ export default function AppointmentPrep() {
           </div>
         </div>
       )}
-    </HeliaSubpageChrome>
+        </main>
+      </div>
+    </div>
   );
 }
