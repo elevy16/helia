@@ -284,6 +284,218 @@ function parseDocumentFlags(rawText) {
     .slice(0, 8);
 }
 
+/** Stable synthetic path so one Epic-synced document per user can be updated on reconnect */
+const EPIC_FHIR_FILE_PATH = 'epic-fhir://helia';
+
+function displayFhirCoding(cc) {
+  if (!cc) return '';
+  if (cc.text) return cc.text;
+  const c = cc.coding && cc.coding[0];
+  return c ? c.display || c.code || '' : '';
+}
+
+/**
+ * Flatten a FHIR Bundle to searchable prose for document_embeddings / RAG.
+ * Keeps clinical semantics so retrieval matches user questions about labs, meds, etc.
+ */
+function flattenFhirBundleForRag(bundle, hospitalName) {
+  const lines = [];
+  lines.push('Hospital chart export (FHIR R4, Epic-compatible simulation)');
+  lines.push(`Managing organization: ${hospitalName}`);
+  lines.push(`Bundle timestamp: ${bundle.timestamp || new Date().toISOString()}`);
+  lines.push('');
+  const heliaMeta = bundle._helia;
+  if (heliaMeta && typeof heliaMeta === 'object') {
+    lines.push('--- Visit summary ---');
+    if (heliaMeta.lastVisitDate) lines.push(`Last outpatient visit date: ${heliaMeta.lastVisitDate}`);
+    if (heliaMeta.lastVisitProvider) lines.push(`Provider: ${heliaMeta.lastVisitProvider}`);
+    if (heliaMeta.lastVisitDepartment) lines.push(`Department: ${heliaMeta.lastVisitDepartment}`);
+    lines.push('');
+  }
+
+  const entries = bundle.entry || [];
+  for (const e of entries) {
+    const r = e.resource;
+    if (!r || !r.resourceType) continue;
+
+    switch (r.resourceType) {
+      case 'Patient':
+        lines.push('--- Patient demographics ---');
+        if (r.birthDate) lines.push(`Date of birth: ${r.birthDate}`);
+        if (r.gender) lines.push(`Gender: ${r.gender}`);
+        lines.push('');
+        break;
+      case 'Encounter':
+        lines.push('--- Encounter ---');
+        if (r.period && r.period.start) lines.push(`Visit start: ${r.period.start}`);
+        if (r.reasonCode && r.reasonCode[0]) {
+          const rc = r.reasonCode[0];
+          lines.push(`Reason for visit: ${rc.text || displayFhirCoding(rc)}`);
+        }
+        if (r.participant && r.participant[0] && r.participant[0].individual && r.participant[0].individual.display) {
+          lines.push(`Clinician: ${r.participant[0].individual.display}`);
+        }
+        if (r.serviceProvider && r.serviceProvider.display) {
+          lines.push(`Facility / organization: ${r.serviceProvider.display}`);
+        }
+        lines.push('');
+        break;
+      case 'Condition':
+        lines.push('--- Condition / diagnosis ---');
+        lines.push(`Problem name: ${displayFhirCoding(r.code)}`);
+        if (r.code && r.code.coding) {
+          const icd = r.code.coding.find((x) => String(x.system || '').toLowerCase().includes('icd'));
+          if (icd) lines.push(`ICD-10 code: ${icd.code} (${icd.display || ''})`);
+        }
+        if (r.onsetDateTime) lines.push(`Onset date: ${r.onsetDateTime}`);
+        if (r.recordedDate) lines.push(`Recorded: ${r.recordedDate}`);
+        lines.push('');
+        break;
+      case 'MedicationRequest':
+        lines.push('--- Medication order ---');
+        lines.push(`Medication: ${displayFhirCoding(r.medicationCodeableConcept)}`);
+        if (r.dosageInstruction && r.dosageInstruction[0] && r.dosageInstruction[0].text) {
+          lines.push(`Sig / instructions: ${r.dosageInstruction[0].text}`);
+        }
+        if (r.authoredOn) lines.push(`Authored: ${r.authoredOn}`);
+        lines.push('');
+        break;
+      case 'Observation':
+        lines.push('--- Laboratory or clinical observation ---');
+        lines.push(`Test: ${displayFhirCoding(r.code)}`);
+        if (r.effectiveDateTime) lines.push(`Effective: ${r.effectiveDateTime}`);
+        if (r.valueQuantity) {
+          lines.push(`Value: ${r.valueQuantity.value} ${r.valueQuantity.unit || ''}`);
+        }
+        if (r.valueString) lines.push(`Value: ${r.valueString}`);
+        if (r.referenceRange && r.referenceRange.length) {
+          const rr = r.referenceRange[0];
+          if (rr.text) lines.push(`Reference range: ${rr.text}`);
+          else if (rr.low != null && rr.high != null) {
+            lines.push(`Reference range: ${rr.low.value}–${rr.high.value} ${rr.low.unit || rr.high.unit || ''}`);
+          }
+        }
+        if (r.interpretation && r.interpretation[0] && r.interpretation[0].text) {
+          lines.push(`Interpretation: ${r.interpretation[0].text}`);
+        }
+        lines.push('');
+        break;
+      case 'Immunization':
+        lines.push('--- Immunization ---');
+        lines.push(`Vaccine: ${displayFhirCoding(r.vaccineCode)}`);
+        if (r.occurrenceDateTime) lines.push(`Administration date: ${r.occurrenceDateTime}`);
+        lines.push('');
+        break;
+      default:
+        break;
+    }
+  }
+
+  return lines.join('\n').trim();
+}
+
+// POST /api/process-fhir — index hospital FHIR bundle into document_embeddings for RAG
+app.post('/api/process-fhir', async (req, res) => {
+  try {
+    const { userId, hospitalName, fhirBundle } = req.body || {};
+    if (!userId || !hospitalName || !fhirBundle || typeof fhirBundle !== 'object') {
+      return res.status(400).json({ error: 'userId, hospitalName, and fhirBundle object are required' });
+    }
+
+    const fullText = flattenFhirBundleForRag(fhirBundle, String(hospitalName));
+    if (!fullText || fullText.length < 40) {
+      return res.status(400).json({ error: 'FHIR bundle produced no searchable text' });
+    }
+
+    const filename = `Epic FHIR — ${String(hospitalName).slice(0, 200)}`;
+
+    const { data: existing, error: findErr } = await supabase
+      .from('document_texts')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('file_path', EPIC_FHIR_FILE_PATH)
+      .maybeSingle();
+
+    if (findErr) {
+      console.error('[process-fhir] lookup document_texts:', findErr);
+      return res.status(500).json({ error: 'Failed to look up existing hospital document' });
+    }
+
+    let documentId;
+    if (existing && existing.id != null) {
+      documentId = existing.id;
+      const { error: upErr } = await supabase
+        .from('document_texts')
+        .update({ filename, content: fullText })
+        .eq('id', documentId)
+        .eq('user_id', userId);
+      if (upErr) {
+        console.error('[process-fhir] update document_texts:', upErr);
+        return res.status(500).json({ error: 'Failed to update hospital document text' });
+      }
+      const { error: delEmbErr } = await supabase.from('document_embeddings').delete().eq('document_id', documentId);
+      if (delEmbErr) {
+        console.error('[process-fhir] delete old embeddings:', delEmbErr);
+        return res.status(500).json({ error: 'Failed to clear old embeddings' });
+      }
+    } else {
+      const { data: inserted, error: insErr } = await supabase
+        .from('document_texts')
+        .insert([
+          {
+            user_id: userId,
+            filename,
+            file_path: EPIC_FHIR_FILE_PATH,
+            content: fullText,
+          },
+        ])
+        .select()
+        .single();
+
+      if (insErr) {
+        console.error('[process-fhir] insert document_texts:', insErr);
+        return res.status(500).json({ error: 'Failed to store hospital document text' });
+      }
+      documentId = inserted.id;
+    }
+
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) {
+      return res.json({
+        ok: true,
+        documentId,
+        embeddings: 0,
+        skipped: true,
+        warning: 'OPENAI_API_KEY not set; hospital text saved but not embedded',
+      });
+    }
+
+    try {
+      const ragResult = await insertDocumentEmbeddings(supabase, {
+        userId,
+        documentId,
+        fullText,
+        openaiApiKey: openaiKey,
+      });
+      return res.json({
+        ok: true,
+        documentId,
+        embeddings: ragResult.count || 0,
+        skipped: !!ragResult.skipped,
+      });
+    } catch (ragErr) {
+      console.error('[process-fhir] embeddings:', ragErr);
+      return res.status(500).json({
+        error: 'Hospital text saved but embedding failed: ' + (ragErr.message || 'unknown'),
+        documentId,
+      });
+    }
+  } catch (err) {
+    console.error('[process-fhir] error:', err);
+    return res.status(500).json({ error: err.message || 'Failed to process FHIR bundle' });
+  }
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });

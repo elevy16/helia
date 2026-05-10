@@ -9,34 +9,128 @@ const OPENAI_EMBED_URL = 'https://api.openai.com/v1/embeddings';
 
 const SCANNED_PLACEHOLDER = 'This document appears to be a scanned image';
 
-function chunkText(text, targetTokens = 500, overlapTokens = 75) {
-  const approxCharsPerToken = 4;
-  const chunkSize = Math.max(400, Math.floor(targetTokens * approxCharsPerToken));
-  const overlap = Math.floor(overlapTokens * approxCharsPerToken);
-  const t = String(text || '').replace(/\r\n/g, '\n').trim();
-  if (!t) return [];
+const APPROX_CHARS_PER_TOKEN = 4;
 
-  const chunks = [];
-  let start = 0;
-  while (start < t.length) {
-    let end = Math.min(start + chunkSize, t.length);
-    if (end < t.length) {
-      const window = t.slice(start, end);
-      let splitAt = window.lastIndexOf('\n\n');
-      if (splitAt < window.length * 0.35) splitAt = window.lastIndexOf('\n');
-      if (splitAt < window.length * 0.35) splitAt = window.lastIndexOf('. ');
-      if (splitAt > 60) {
-        const ch = window[splitAt];
-        end = start + splitAt + (ch === '.' ? 2 : 1);
+/** Split into sentences on . ? ! followed by space/newline (preserves abbreviations poorly but OK for medical prose). */
+function splitSentences(block) {
+  const s = String(block || '').trim();
+  if (!s) return [];
+  const parts = s.split(/(?<=[.!?])\s+/);
+  return parts.map((x) => x.trim()).filter((x) => x.length > 0);
+}
+
+/**
+ * Semantic-ish chunking: paragraph boundaries first, then sentences, then overlap splits.
+ * Targets ~`targetTokens` tokens per chunk with `overlapTokens` overlap when forced to split.
+ */
+function chunkText(text, targetTokens = 500, overlapTokens = 75) {
+  const maxChars = Math.max(480, Math.floor(targetTokens * APPROX_CHARS_PER_TOKEN));
+  const overlapChars = Math.floor(overlapTokens * APPROX_CHARS_PER_TOKEN);
+  const minChunkChars = 40;
+
+  const normalized = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+
+  const paragraphs = normalized.split(/\n\s*\n+/).map((p) => p.trim()).filter(Boolean);
+
+  /** Ordered text units (paragraph or sentence), never longer than maxChars unless unavoidable */
+  const units = [];
+  for (const para of paragraphs) {
+    if (para.length <= maxChars) {
+      units.push(para);
+      continue;
+    }
+    const sents = splitSentences(para);
+    if (sents.length <= 1) {
+      for (let i = 0; i < para.length; i += maxChars - overlapChars) {
+        const slice = para.slice(i, i + maxChars).trim();
+        if (slice.length >= minChunkChars) units.push(slice);
+      }
+      continue;
+    }
+    let buf = '';
+    for (const sent of sents) {
+      const joined = buf ? `${buf} ${sent}` : sent;
+      if (joined.length <= maxChars) {
+        buf = joined;
+      } else {
+        if (buf.length >= minChunkChars) units.push(buf);
+        if (sent.length <= maxChars) {
+          buf = sent;
+        } else {
+          for (let i = 0; i < sent.length; i += maxChars - overlapChars) {
+            const sl = sent.slice(i, i + maxChars).trim();
+            if (sl.length >= minChunkChars) units.push(sl);
+          }
+          buf = '';
+        }
       }
     }
-    const chunk = t.slice(start, end).trim();
-    if (chunk.length >= 40) chunks.push(chunk);
-    if (end >= t.length) break;
-    const next = end - overlap;
-    start = next > start ? next : start + Math.floor(chunkSize / 2);
+    if (buf.length >= minChunkChars) units.push(buf);
   }
+
+  const chunks = [];
+  let current = '';
+  for (const u of units) {
+    const sep = current ? '\n\n' : '';
+    const candidate = current ? `${current}${sep}${u}` : u;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+      continue;
+    }
+    if (current.length >= minChunkChars) chunks.push(current);
+    if (u.length <= maxChars) {
+      current = u;
+    } else {
+      for (let i = 0; i < u.length; i += maxChars - overlapChars) {
+        const sl = u.slice(i, i + maxChars).trim();
+        if (sl.length >= minChunkChars) chunks.push(sl);
+      }
+      current = '';
+    }
+  }
+  if (current.length >= minChunkChars) chunks.push(current);
+
   return chunks;
+}
+
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'her', 'was', 'one', 'our', 'out',
+  'day', 'get', 'has', 'him', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'way', 'who', 'did',
+  'let', 'put', 'say', 'she', 'too', 'use', 'why', 'any', 'had', 'have', 'what', 'when',
+  'with', 'this', 'that', 'from', 'your', 'about', 'into', 'than', 'then', 'them', 'would', 'could',
+  'should', 'does', 'been', 'being', 'such', 'each', 'also', 'will', 'just', 'like',
+]);
+
+function tokenizeQueryForRag(queryText) {
+  return String(queryText || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
+}
+
+function keywordOverlapScore(queryText, chunkContent) {
+  const words = tokenizeQueryForRag(queryText);
+  if (!words.length) return 0;
+  const text = String(chunkContent || '').toLowerCase();
+  let hits = 0;
+  for (const w of words) {
+    if (text.includes(w)) hits += 1;
+  }
+  return hits / words.length;
+}
+
+/** Combine vector similarity with lexical overlap; sort descending. */
+function rerankChunks(chunks, queryText, similarityWeight = 0.62, keywordWeight = 0.38) {
+  const scored = chunks.map((c) => {
+    const sim = typeof c.similarity === 'number' && !Number.isNaN(c.similarity) ? c.similarity : 0;
+    const kw = keywordOverlapScore(queryText, c.content);
+    const rerank_score = similarityWeight * sim + keywordWeight * kw;
+    return { ...c, keyword_score: kw, rerank_score };
+  });
+  scored.sort((a, b) => b.rerank_score - a.rerank_score);
+  return scored;
 }
 
 function toVectorParam(vec) {
@@ -139,17 +233,28 @@ async function retrieveRagChunks(supabase, openaiApiKey, { userId, queryText, do
     return { docChunks: [], medChunks: [], queryEmbedding: null };
   }
   const query_embedding = toVectorParam(vec);
-  console.log('[RAG] calling Supabase RPC match_document_chunks + match_medical_knowledge, vector str len=', query_embedding.length);
+
+  const fetchDoc = Math.min(32, Math.max(docLimit * 2, docLimit));
+  const fetchMed = Math.min(32, Math.max(medLimit * 2, medLimit));
+
+  console.log(
+    '[RAG] calling Supabase RPC match_document_chunks + match_medical_knowledge, fetchDoc=',
+    fetchDoc,
+    'fetchMed=',
+    fetchMed,
+    'vector str len=',
+    query_embedding.length
+  );
 
   const [{ data: docData, error: docErr }, { data: medData, error: medErr }] = await Promise.all([
     supabase.rpc('match_document_chunks', {
       query_embedding,
       filter_user_id: userId,
-      match_count: docLimit,
+      match_count: fetchDoc,
     }),
     supabase.rpc('match_medical_knowledge', {
       query_embedding,
-      match_count: medLimit,
+      match_count: fetchMed,
     }),
   ]);
 
@@ -158,7 +263,7 @@ async function retrieveRagChunks(supabase, openaiApiKey, { userId, queryText, do
   if (medErr) console.error('[RAG] match_medical_knowledge error:', medErr.code, medErr.message, medErr.details || '');
   else console.log('[RAG] match_medical_knowledge rows:', (medData && medData.length) || 0);
 
-  const docChunks = (docData || []).map((r) => ({
+  const docMapped = (docData || []).map((r) => ({
     content: r.content,
     chunk_index: r.chunk_index,
     document_id: r.document_id,
@@ -166,7 +271,7 @@ async function retrieveRagChunks(supabase, openaiApiKey, { userId, queryText, do
     similarity: r.similarity,
   }));
 
-  const medChunks = (medData || []).map((r) => ({
+  const medMapped = (medData || []).map((r) => ({
     content: r.content,
     chunk_index: r.chunk_index,
     topic_title: r.topic_title,
@@ -175,7 +280,10 @@ async function retrieveRagChunks(supabase, openaiApiKey, { userId, queryText, do
     similarity: r.similarity,
   }));
 
-  console.log('[RAG] retrieveRagChunks done');
+  const docChunks = rerankChunks(docMapped, queryText).slice(0, docLimit);
+  const medChunks = rerankChunks(medMapped, queryText).slice(0, medLimit);
+
+  console.log('[RAG] retrieveRagChunks done (re-ranked)');
   return { docChunks, medChunks, queryEmbedding: vec };
 }
 
@@ -194,8 +302,8 @@ function buildRagContextBlock(docChunks, medChunks) {
   if (medChunks.length) {
     parts.push(
       [
-        'Retrieved general reference information from NIH MedlinePlus (public educational content).',
-        'When you rely on this material, cite it clearly (for example: "According to NIH MedlinePlus ...") and include the topic or page when helpful.',
+        'Retrieved general reference information from NIH MedlinePlus and/or FDA drug labeling excerpts (public educational / regulatory text).',
+        'When you rely on MedlinePlus material, cite it clearly (for example: "According to NIH MedlinePlus ..."). For FDA label excerpts, say clearly that information comes from FDA-approved prescribing information.',
         ...medChunks.map(
           (c) =>
             `---\n${c.source_citation || 'NIH MedlinePlus'}\n` +
@@ -222,4 +330,6 @@ module.exports = {
   retrieveRagChunks,
   buildRagContextBlock,
   shouldSkipDocumentEmbedding,
+  rerankChunks,
+  keywordOverlapScore,
 };
