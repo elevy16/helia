@@ -10,6 +10,9 @@ import AppointmentDebrief from './AppointmentDebrief';
 import SymptomTracker from './SymptomTracker';
 import MedicationTracker from './MedicationTracker';
 import HospitalConnect from './HospitalConnect';
+import HealthAlerts from './HealthAlerts';
+import Lifestyle from './Lifestyle';
+import SecondOpinion from './SecondOpinion';
 import { helia } from './heliaTheme';
 
 function Home() {
@@ -138,6 +141,9 @@ function App() {
         <Route path="/symptoms" element={<RequireAuth><SymptomTracker /></RequireAuth>} />
         <Route path="/medications" element={<RequireAuth><MedicationTracker /></RequireAuth>} />
         <Route path="/hospital" element={<RequireAuth><HospitalConnect /></RequireAuth>} />
+        <Route path="/alerts" element={<RequireAuth><HealthAlerts /></RequireAuth>} />
+        <Route path="/lifestyle" element={<RequireAuth><Lifestyle /></RequireAuth>} />
+        <Route path="/second-opinion" element={<RequireAuth><SecondOpinion /></RequireAuth>} />
       </Routes>
     </Router>
   );

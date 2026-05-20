@@ -49,6 +49,9 @@ export default function HeliaSidebar({ userEmail, onLogout }) {
       <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
         {[
           { to: '/dashboard', label: 'Dashboard' },
+          { to: '/alerts', label: 'Health Alerts' },
+          { to: '/lifestyle', label: 'Nutrition & Lifestyle' },
+          { to: '/second-opinion', label: 'Second Opinion' },
           { to: '/timeline', label: 'Timeline' },
           { to: '/symptoms', label: 'Symptom Tracker' },
           { to: '/medications', label: 'Medication Tracker' },

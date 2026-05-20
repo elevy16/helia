@@ -4,6 +4,14 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const pdfParseModule = require('pdf-parse');
 const { insertDocumentEmbeddings, retrieveRagChunks, buildRagContextBlock } = require('./rag');
+const {
+  fetchUserHealthContext,
+  fetchHealthNews,
+  parseHealthAlerts,
+  parseLifestyleTips,
+  parseSecondOpinionResponse,
+  callClaude,
+} = require('./healthContext');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -1316,6 +1324,223 @@ ${chunks.join('\n\n---\n\n')}`;
   } catch (err) {
     console.error('[health-insights] unhandled:', err && err.stack ? err.stack : err);
     return res.status(500).json({ error: err.message || 'Failed to generate health insights' });
+  }
+});
+
+// Personalized health alerts endpoint
+app.post('/api/health-alerts', async (req, res) => {
+  const reqId = `alerts-${Date.now()}`;
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set on server' });
+
+    console.log(`[health-alerts:${reqId}] fetching profile and news…`);
+    const [healthContext, newsItems] = await Promise.all([
+      fetchUserHealthContext(supabase, userId),
+      fetchHealthNews(25),
+    ]);
+
+    const newsBlock =
+      newsItems.length > 0
+        ? newsItems
+            .map(
+              (n, i) =>
+                `[${i + 1}] ${n.title}\nSource: ${n.source}\n${n.description}\nLink: ${n.link || 'n/a'}`
+            )
+            .join('\n\n')
+        : 'No recent health news available from feeds.';
+
+    const prompt = `You are Helia, a personalized health companion. Generate health alerts for this patient.
+
+TASK:
+1. Review their health profile (diagnoses, medications, conditions, lab results from documents and FHIR data).
+2. From the RECENT HEALTH NEWS list, select items personally relevant to this patient (0-3 news-based alerts).
+3. Generate proactive follow-up reminders based on their health history (e.g. "Your last iron labs were 3 months ago, consider a follow-up").
+4. Return 3-8 total alerts combining news-based and reminder-based items.
+
+RULES:
+- Be specific to THIS patient's records — cite actual diagnoses, medications, or lab values when available.
+- Do NOT diagnose. Frame as discussion topics or awareness items.
+- For news items, use the original source name in the "source" field.
+- For reminder items, use source "Helia" or "Your health records".
+- urgency: "info" for general awareness, "warning" for follow-ups due soon or moderate concern, "alert" for urgent red flags only.
+
+OUTPUT: Return ONLY valid JSON array. Each object:
+- "title" (string)
+- "description" (string)
+- "relevanceExplanation" (string — why this matters for THIS patient)
+- "source" (string)
+- "urgency" ("info" | "warning" | "alert")
+- "actionSuggestion" (string)
+
+PATIENT HEALTH PROFILE:
+${healthContext.profileText}
+
+RECENT HEALTH NEWS:
+${newsBlock}`;
+
+    const rawText = await callClaude(
+      apiKey,
+      'You are a careful medical analyst creating patient-safe, personalized health alerts. Return only valid JSON.',
+      prompt,
+      2000
+    );
+
+    let alerts;
+    try {
+      alerts = parseHealthAlerts(rawText);
+    } catch (parseErr) {
+      console.error(`[health-alerts:${reqId}] parse failed:`, parseErr.message);
+      return res.status(500).json({ error: 'Could not parse alerts: ' + parseErr.message });
+    }
+
+    console.log(`[health-alerts:${reqId}] success, alerts=${alerts.length}`);
+    return res.json({ alerts, lastUpdated: new Date().toISOString() });
+  } catch (err) {
+    console.error(`[health-alerts:${reqId}]`, err);
+    return res.status(500).json({ error: err.message || 'Failed to generate health alerts' });
+  }
+});
+
+// Lifestyle and nutrition tips from lab results
+app.post('/api/lifestyle-tips', async (req, res) => {
+  const reqId = `lifestyle-${Date.now()}`;
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set on server' });
+
+    const healthContext = await fetchUserHealthContext(supabase, userId);
+    if (!healthContext.hasRecords) {
+      return res.json({ tips: [] });
+    }
+
+    const prompt = `You are Helia, a health companion. Generate personalized nutrition and lifestyle tips based on this patient's ACTUAL lab results and diagnoses.
+
+TASK:
+- Return 3 to 5 specific, actionable tips grounded in their real data.
+- Reference actual lab values, dates, and diagnoses from their records (e.g. "Your ferritin of 12 ng/mL is below the typical range…").
+- Do NOT give generic advice that could apply to anyone without records.
+- Do NOT diagnose or replace medical advice — frame as lifestyle suggestions to discuss with their doctor.
+
+Each tip category must be one of: "nutrition", "lifestyle", "supplement", "activity"
+
+OUTPUT: Return ONLY valid JSON array. Each object:
+- "category" ("nutrition" | "lifestyle" | "supplement" | "activity")
+- "title" (string, short)
+- "explanation" (string — must reference actual values/findings from their records)
+- "action" (string — specific actionable step)
+
+PATIENT HEALTH DATA:
+${healthContext.profileText}`;
+
+    const rawText = await callClaude(
+      apiKey,
+      'You are a nutrition and lifestyle advisor creating evidence-informed, patient-specific tips. Return only valid JSON.',
+      prompt,
+      1500
+    );
+
+    let tips;
+    try {
+      tips = parseLifestyleTips(rawText);
+    } catch (parseErr) {
+      console.error(`[lifestyle-tips:${reqId}] parse failed:`, parseErr.message);
+      return res.status(500).json({ error: 'Could not parse tips: ' + parseErr.message });
+    }
+
+    console.log(`[lifestyle-tips:${reqId}] success, tips=${tips.length}`);
+    return res.json({ tips, lastUpdated: new Date().toISOString() });
+  } catch (err) {
+    console.error(`[lifestyle-tips:${reqId}]`, err);
+    return res.status(500).json({ error: err.message || 'Failed to generate lifestyle tips' });
+  }
+});
+
+// Second opinion support endpoint
+app.post('/api/second-opinion', async (req, res) => {
+  const reqId = `second-opinion-${Date.now()}`;
+  try {
+    const { userId, diagnosis, provider, concerns } = req.body;
+    if (!userId || !diagnosis || !provider) {
+      return res.status(400).json({ error: 'userId, diagnosis, and provider are required' });
+    }
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set on server' });
+
+    const healthContext = await fetchUserHealthContext(supabase, userId);
+
+    let ragBlock = '';
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (openaiKey) {
+      const queryText = `${diagnosis} ${concerns || ''}`.trim();
+      try {
+        const { docChunks, medChunks } = await withTimeout(
+          retrieveRagChunks(supabase, openaiKey, {
+            userId,
+            queryText,
+            docLimit: 8,
+            medLimit: 5,
+          }),
+          25000,
+          'retrieveRagChunks'
+        );
+        ragBlock = buildRagContextBlock(docChunks, medChunks);
+        if (ragBlock.length > MAX_RAG_BLOCK_CHARS) {
+          ragBlock = `${ragBlock.slice(0, MAX_RAG_BLOCK_CHARS)}\n\n[Context truncated.]`;
+        }
+      } catch (ragErr) {
+        console.warn(`[second-opinion:${reqId}] RAG failed:`, ragErr.message);
+      }
+    }
+
+    const prompt = `You are Helia, helping a patient understand a diagnosis or treatment and decide whether to seek a second opinion.
+
+PATIENT INPUT:
+- Diagnosis or treatment received: ${diagnosis}
+- Who told them: ${provider}
+- Their concerns: ${concerns || 'None specified'}
+
+FULL HEALTH CONTEXT (documents, medications, FHIR):
+${healthContext.profileText}
+
+${ragBlock ? `RETRIEVED RELEVANT EXCERPTS (RAG):\n${ragBlock}` : ''}
+
+Generate a supportive, plain-English response. Do NOT diagnose. Help them understand and advocate.
+
+OUTPUT: Return ONLY valid JSON object with these fields:
+- "diagnosisExplanation" (string — plain English explanation of the diagnosis/treatment in context of their records)
+- "questionsForDoctor" (array of 4-6 specific questions worth asking)
+- "secondOpinionGuidance" (string — what a second opinion involves and when it's warranted for their situation)
+- "redFlags" (array of 2-5 red flags that would make a second opinion more urgent)
+- "selfAdvocacy" (string — how to advocate for themselves in this situation)`;
+
+    const rawText = await callClaude(
+      apiKey,
+      'You are a compassionate health advocate helping patients understand medical decisions and seek appropriate second opinions. Return only valid JSON.',
+      prompt,
+      2500
+    );
+
+    let response;
+    try {
+      response = parseSecondOpinionResponse(rawText);
+    } catch (parseErr) {
+      console.error(`[second-opinion:${reqId}] parse failed:`, parseErr.message);
+      return res.status(500).json({ error: 'Could not parse response: ' + parseErr.message });
+    }
+
+    console.log(`[second-opinion:${reqId}] success`);
+    return res.json({ response });
+  } catch (err) {
+    console.error(`[second-opinion:${reqId}]`, err);
+    return res.status(500).json({ error: err.message || 'Failed to generate second opinion guidance' });
   }
 });
 
