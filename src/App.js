@@ -13,6 +13,7 @@ import HospitalConnect from './HospitalConnect';
 import HealthAlerts from './HealthAlerts';
 import Lifestyle from './Lifestyle';
 import SecondOpinion from './SecondOpinion';
+import EmergencyCard from './EmergencyCard';
 import { helia } from './heliaTheme';
 
 function Home() {
@@ -144,6 +145,7 @@ function App() {
         <Route path="/alerts" element={<RequireAuth><HealthAlerts /></RequireAuth>} />
         <Route path="/lifestyle" element={<RequireAuth><Lifestyle /></RequireAuth>} />
         <Route path="/second-opinion" element={<RequireAuth><SecondOpinion /></RequireAuth>} />
+        <Route path="/emergency-card" element={<RequireAuth><EmergencyCard /></RequireAuth>} />
       </Routes>
     </Router>
   );

@@ -5,6 +5,7 @@ import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
 import { helia, heliaInsightColors } from './heliaTheme';
 import HeliaSidebar from './HeliaSidebar';
+import HealthScoreWidget from './HealthScoreWidget';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -107,6 +108,9 @@ export default function Dashboard() {
   const [healthInsights, setHealthInsights] = useState([]);
   const [healthInsightsLoading, setHealthInsightsLoading] = useState(false);
   const [healthInsightsError, setHealthInsightsError] = useState('');
+  const [healthScore, setHealthScore] = useState(null);
+  const [healthScoreLoading, setHealthScoreLoading] = useState(false);
+  const [healthScoreError, setHealthScoreError] = useState('');
   const [latestDocumentFlags, setLatestDocumentFlags] = useState(null);
   const [analyzingUpload, setAnalyzingUpload] = useState(false);
   const fileInputRef = useRef(null);
@@ -179,6 +183,7 @@ export default function Dashboard() {
       fetchFiles();
       initChatSessions();
       fetchHealthInsights();
+      fetchHealthScore();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -315,6 +320,31 @@ export default function Dashboard() {
     }
   }
 
+  async function fetchHealthScore() {
+    if (!user) return;
+    setHealthScoreLoading(true);
+    setHealthScoreError('');
+    try {
+      const resp = await fetch(`${HELIA_API_BASE}/api/health-score`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`Backend error: ${resp.status} ${text}`);
+      }
+      const data = await resp.json();
+      setHealthScore(data);
+    } catch (err) {
+      console.error('[health-score] Failed to fetch:', err);
+      setHealthScore(null);
+      setHealthScoreError('Could not load your engagement score right now.');
+    } finally {
+      setHealthScoreLoading(false);
+    }
+  }
+
   async function handleUpload(e) {
     e.preventDefault();
     setMessage('');
@@ -416,6 +446,7 @@ export default function Dashboard() {
           }
           await fetchFiles();
           await fetchHealthInsights();
+          await fetchHealthScore();
         } else {
           let errText = 'Unknown error';
           try {
@@ -517,6 +548,7 @@ export default function Dashboard() {
         showMessage('Document deleted.');
       }
       await fetchHealthInsights();
+      await fetchHealthScore();
     } catch (err) {
       showMessage('Delete failed: ' + (err.message || String(err)));
     } finally {
@@ -852,6 +884,7 @@ export default function Dashboard() {
             }
             return next;
           });
+          fetchHealthScore();
         }
       } else {
         setConversationError('No response from AI.');
@@ -915,6 +948,8 @@ export default function Dashboard() {
         </div>
 
         <main style={{ padding: '12px 36px 48px', maxWidth: 1040, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+        <HealthScoreWidget scoreData={healthScore} loading={healthScoreLoading} error={healthScoreError} />
+
         <section style={{ marginBottom: 36 }}>
           <h2 style={{ color: helia.forest, marginBottom: 14, fontSize: 20, fontWeight: 700 }}>My Documents</h2>
 

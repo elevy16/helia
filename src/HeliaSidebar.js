@@ -52,6 +52,7 @@ export default function HeliaSidebar({ userEmail, onLogout }) {
           { to: '/alerts', label: 'Health Alerts' },
           { to: '/lifestyle', label: 'Nutrition & Lifestyle' },
           { to: '/second-opinion', label: 'Second Opinion' },
+          { to: '/emergency-card', label: 'Emergency Card' },
           { to: '/timeline', label: 'Timeline' },
           { to: '/symptoms', label: 'Symptom Tracker' },
           { to: '/medications', label: 'Medication Tracker' },

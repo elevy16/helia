@@ -8,6 +8,8 @@
     "dev": "nodemon server.js",
     "ingest-medical": "node scripts/ingest-medlineplus.js",
     "ingest-fda": "node scripts/ingest-fda-drugs.js",
+    "ingest-cdc": "node scripts/ingest-cdc.js",
+    "ingest-pubmed": "node scripts/ingest-pubmed.js",
     "backfill-embeddings": "node scripts/backfill-document-embeddings.js"
   },
   "keywords": [],

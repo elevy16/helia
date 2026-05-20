@@ -12,6 +12,7 @@ const {
   parseSecondOpinionResponse,
   callClaude,
 } = require('./healthContext');
+const { calculateHealthScore, recordEngagement } = require('./healthScore');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -1093,6 +1094,10 @@ Keep it concise, clear, and supportive.`;
     const data = await anthropicRes.json();
     const summary = (data.content && data.content[0] && data.content[0].text) || '';
 
+    await recordEngagement(supabase, userId, {
+      appointment_prep_at: new Date().toISOString(),
+    });
+
     res.json({ summary });
   } catch (err) {
     console.error('Appointment prep error:', err);
@@ -1398,6 +1403,11 @@ ${newsBlock}`;
     }
 
     console.log(`[health-alerts:${reqId}] success, alerts=${alerts.length}`);
+
+    await recordEngagement(supabase, userId, {
+      health_alerts_viewed_at: new Date().toISOString(),
+    });
+
     return res.json({ alerts, lastUpdated: new Date().toISOString() });
   } catch (err) {
     console.error(`[health-alerts:${reqId}]`, err);
@@ -1541,6 +1551,20 @@ OUTPUT: Return ONLY valid JSON object with these fields:
   } catch (err) {
     console.error(`[second-opinion:${reqId}]`, err);
     return res.status(500).json({ error: err.message || 'Failed to generate second opinion guidance' });
+  }
+});
+
+// Health engagement score endpoint
+app.post('/api/health-score', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const result = await calculateHealthScore(supabase, userId);
+    return res.json(result);
+  } catch (err) {
+    console.error('[health-score]', err);
+    return res.status(500).json({ error: err.message || 'Failed to calculate health score' });
   }
 });
 

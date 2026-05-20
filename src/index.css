@@ -44,3 +44,34 @@ code {
   border-color: rgba(122, 158, 126, 0.4);
   border-top-color: #2d5a27;
 }
+
+/* Emergency Health Card — print as clean black & white */
+@media print {
+  body {
+    background: #fff !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .emergency-card-page {
+    display: block !important;
+    min-height: auto !important;
+    background: #fff !important;
+  }
+
+  .emergency-card-printable {
+    box-shadow: none !important;
+    border: 2px solid #000 !important;
+    border-radius: 0 !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 24px 32px !important;
+    page-break-inside: avoid;
+  }
+
+  .emergency-card-printable * {
+    color: #000 !important;
+  }
+}
