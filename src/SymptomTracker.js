@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
 
 function startOfMondayWeek(ref = new Date()) {
   const d = new Date(ref);
@@ -39,7 +39,6 @@ export default function SymptomTracker() {
   const [severity, setSeverity] = useState(5);
   const [loggedDate, setLoggedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState('');
-  const navigate = useNavigate();
 
   useEffect(() => {
     let m = true;
@@ -75,11 +74,6 @@ export default function SymptomTracker() {
     if (user) loadSymptoms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -135,29 +129,13 @@ export default function SymptomTracker() {
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Symptom tracker
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            Log how you feel and spot patterns over time.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Symptom tracker"
+        subtitle="Log how you feel and spot patterns over time."
+        breadcrumb={[{ label: 'Track', to: '/symptoms' }, { label: 'Symptom Tracker' }]}
+      />
+      <main style={heliaPageMainStyle}>
           <section style={{ marginBottom: 32 }}>
             <h2 style={{ color: helia.forest, marginBottom: 14, fontSize: 20, fontWeight: 700 }}>Log a symptom</h2>
             <form
@@ -311,8 +289,7 @@ export default function SymptomTracker() {
               </div>
             )}
           </section>
-        </main>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

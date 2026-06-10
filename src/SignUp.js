@@ -3,6 +3,36 @@ import { supabase } from './supabaseClient';
 import { useNavigate, Link } from 'react-router-dom';
 import { helia } from './heliaTheme';
 
+function formatSignUpError(signErr, attemptedEmail) {
+  const code = signErr?.code || '';
+  const msg = signErr?.message || '';
+
+  if (code === 'over_email_send_rate_limit' || /rate limit|rate exceeded/i.test(msg)) {
+    return (
+      'Supabase has temporarily blocked signup emails (about 3 per hour on the free built-in mailer). ' +
+      'Wait an hour and try again, log in if the account was already created, or in Supabase go to ' +
+      'Authentication → Providers → Email and turn off “Confirm email” for local testing.'
+    );
+  }
+
+  if (code === 'email_address_not_authorized') {
+    return (
+      'This email cannot receive a confirmation message with Supabase’s default mailer. ' +
+      'Use an email on your Supabase org team, set up custom SMTP, or turn off “Confirm email” under Authentication → Providers → Email.'
+    );
+  }
+
+  if (code === 'validation_failed' || /invalid format/i.test(msg)) {
+    return 'That email has an invalid format — often caused by an extra space from autofill. Please retype it and try again.';
+  }
+
+  if (code === 'email_address_invalid') {
+    return `Supabase rejected “${attemptedEmail}”. Test domains like @example.com are blocked; otherwise retype the address carefully and try again.`;
+  }
+
+  return msg || 'Sign up failed.';
+}
+
 export default function SignUp() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -12,19 +42,39 @@ export default function SignUp() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     setError(null);
     setLoading(true);
 
-    const { error: signErr } = await supabase.auth.signUp({ email, password });
+    try {
+      // Only clear an existing session when one is active (avoids extra auth calls).
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (sessionData.session) {
+        await supabase.auth.signOut();
+      }
 
-    setLoading(false);
+      // Pass email through as-is except trimming whitespace (autofill often adds trailing spaces).
+      const signupEmail = email.trim();
 
-    if (signErr) {
-      setError(signErr.message);
-      return;
+      const { data, error: signErr } = await supabase.auth.signUp({
+        email: signupEmail,
+        password,
+      });
+
+      if (signErr) {
+        setError(formatSignUpError(signErr, signupEmail));
+        return;
+      }
+
+      if (data.session) {
+        navigate('/dashboard');
+        return;
+      }
+
+      navigate('/login');
+    } finally {
+      setLoading(false);
     }
-
-    navigate('/dashboard');
   };
 
   const inputStyle = {
@@ -96,7 +146,9 @@ export default function SignUp() {
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            onBlur={(e) => setEmail(e.target.value.trim())}
             type="email"
+            autoComplete="email"
             required
             style={{ ...inputStyle, marginBottom: 18 }}
           />

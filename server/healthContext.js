@@ -255,6 +255,14 @@ function parseLifestyleTips(rawText) {
     .slice(0, 5);
 }
 
+function parseAskDoctorQuestions(rawText) {
+  const parsed = parseJsonArrayFromClaude(rawText, 'doctor questions');
+  return parsed
+    .map((q) => String(q || '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 function parseSecondOpinionResponse(rawText) {
   const parsed = parseJsonObjectFromClaude(rawText, 'second opinion');
   return {
@@ -300,11 +308,81 @@ async function callClaude(apiKey, system, prompt, maxTokens = 1500) {
     .trim();
 }
 
+async function generateAskDoctorQuestions(apiKey, documentText, sourceLabel) {
+  const system = `You help patients advocate for themselves at doctor appointments.
+Generate 5-8 specific, actionable questions the patient should ask their doctor about THIS document or health finding.
+Reference actual values, findings, diagnoses, medications, or details from the text when present.
+Frame questions as advocacy — helping the user push back, get clarity, understand options, and be informed (not passive).
+Each question should be direct and conversational, as the patient would say it.
+Return ONLY a JSON array of question strings, no markdown.`;
+
+  const prompt = `Source: ${sourceLabel || 'Health record'}
+
+Document / finding content:
+${String(documentText || '').slice(0, 14000)}
+
+Generate the questions JSON array now.`;
+
+  const raw = await callClaude(apiKey, system, prompt, 1200);
+  return parseAskDoctorQuestions(raw);
+}
+
+async function getCachedHealthNarrative(supabase, userId) {
+  const { data, error } = await supabase
+    .from('health_narratives')
+    .select('narrative, generated_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if (error) throw new Error('Failed to fetch health narrative: ' + error.message);
+  return data;
+}
+
+async function generateAndCacheHealthNarrative(supabase, apiKey, userId) {
+  const ctx = await fetchUserHealthContext(supabase, userId);
+
+  const system = `You are a brilliant, warm physician who has reviewed a patient's full health history and is writing them a personal letter.
+Write in plain English — no medical jargon unless you immediately explain it.
+Use markdown with ## section headings for clarity.
+The narrative should:
+- Tell their health story cohesively over time
+- Identify patterns and connections across records
+- Explain what diagnoses and findings mean in everyday context
+- Note what is being managed well and what needs attention
+- End with a "## What to focus on" section with 2-3 key priorities
+Tone: supportive, honest, empowering — like a letter to the patient, NOT a clinical report.
+Do not invent facts not supported by the records. If data is sparse, say so gently.`;
+
+  const prompt = `Write this patient's health narrative based on their records:
+
+${ctx.profileText}`;
+
+  const narrative = await callClaude(apiKey, system, prompt, 3000);
+  const generatedAt = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from('health_narratives')
+    .upsert(
+      { user_id: userId, narrative, generated_at: generatedAt },
+      { onConflict: 'user_id' }
+    )
+    .select('narrative, generated_at')
+    .single();
+
+  if (error) throw new Error('Failed to save health narrative: ' + error.message);
+  return data;
+}
+
 module.exports = {
   fetchUserHealthContext,
   fetchHealthNews,
   parseHealthAlerts,
   parseLifestyleTips,
+  parseAskDoctorQuestions,
+  parseJsonArrayFromClaude,
   parseSecondOpinionResponse,
+  generateAskDoctorQuestions,
+  getCachedHealthNarrative,
+  generateAndCacheHealthNarrative,
   callClaude,
 };

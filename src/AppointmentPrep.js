@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
+import { ClipboardList, HeliaIcon } from './heliaIcons';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -14,12 +15,6 @@ export default function AppointmentPrep() {
   const [prepSummary, setPrepSummary] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   useEffect(() => {
     async function fetchUser() {
@@ -77,29 +72,13 @@ export default function AppointmentPrep() {
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Appointment prep
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            Prepare for your visit with a personalized summary based on your records.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Appointment prep"
+        subtitle="Prepare for your visit with a personalized summary based on your records."
+        breadcrumb={[{ label: 'My Care', to: '/appointment-prep' }, { label: 'Appointment Prep' }]}
+      />
+      <main style={heliaPageMainStyle}>
       <form
         onSubmit={handleSubmit}
         style={{
@@ -196,13 +175,12 @@ export default function AppointmentPrep() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: `linear-gradient(145deg, ${helia.sage}, ${helia.forest})`,
+                background: helia.sageMuted,
                 borderRadius: helia.radiusSm,
-                fontSize: 22,
                 border: `1px solid ${helia.border}`,
               }}
             >
-              📋
+              <HeliaIcon icon={ClipboardList} size={22} color={helia.sage} strokeWidth={2} />
             </div>
             <div style={{ minWidth: 0, flex: 1 }}>
               <div
@@ -222,8 +200,7 @@ export default function AppointmentPrep() {
           </div>
         </div>
       )}
-        </main>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

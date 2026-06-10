@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia, heliaInsightColors } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
+import { Bell, HeliaIcon } from './heliaIcons';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -34,13 +35,6 @@ export default function HealthAlerts() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
-
   useEffect(() => {
     async function fetchUser() {
       const { data } = await supabase.auth.getUser();
@@ -78,29 +72,13 @@ export default function HealthAlerts() {
   }, [user, fetchAlerts]);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Health Alerts
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            Personalized news and follow-up reminders based on your health profile.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Health Alerts"
+        subtitle="Personalized news and follow-up reminders based on your health profile."
+        breadcrumb={[{ label: 'My Health', to: '/dashboard' }, { label: 'Health Alerts' }]}
+      />
+      <main style={heliaPageMainStyle}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginBottom: 20 }}>
             <button
               type="button"
@@ -164,7 +142,9 @@ export default function HealthAlerts() {
                 color: helia.muted,
               }}
             >
-              <div style={{ fontSize: 40, marginBottom: 12 }} aria-hidden>🔔</div>
+              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center' }} aria-hidden>
+                <HeliaIcon icon={Bell} size={40} color={helia.sage} strokeWidth={1.5} />
+              </div>
               <div style={{ fontWeight: 600, color: helia.forest, marginBottom: 8, fontSize: 18 }}>
                 No relevant alerts right now
               </div>
@@ -248,8 +228,7 @@ export default function HealthAlerts() {
               })}
             </div>
           )}
-        </main>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

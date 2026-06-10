@@ -45,6 +45,27 @@ code {
   border-top-color: #2d5a27;
 }
 
+.helia-nav-link:hover {
+  background: rgba(122, 158, 126, 0.12) !important;
+  border-color: rgba(122, 158, 126, 0.25) !important;
+}
+
+.helia-fab:hover {
+  transform: scale(1.06);
+}
+
+.helia-quick-action:hover {
+  background: #fff !important;
+  border-color: rgba(122, 158, 126, 0.35) !important;
+  box-shadow: 0 4px 14px rgba(45, 90, 39, 0.1) !important;
+}
+
+@media (max-width: 768px) {
+  .helia-quick-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
 /* Emergency Health Card — print as clean black & white */
 @media print {
   body {

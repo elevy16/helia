@@ -1,8 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
+import {
+  BookOpen,
+  Flag,
+  HeliaIcon,
+  HelpCircle,
+  ShieldCheck,
+  Stethoscope,
+} from './heliaIcons';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -19,13 +27,13 @@ const fieldStyle = {
   outline: 'none',
 };
 
-function Section({ title, icon, children, accent }) {
+function Section({ title, icon: Icon, children, accent }) {
   return (
     <div
       style={{
         background: helia.card,
         borderRadius: helia.radius,
-        padding: '22px 24px',
+        padding: '26px 28px',
         border: `1px solid ${helia.border}`,
         boxShadow: helia.cardShadow,
         marginBottom: 16,
@@ -41,11 +49,10 @@ function Section({ title, icon, children, accent }) {
             justifyContent: 'center',
             background: accent || helia.sageMuted,
             borderRadius: helia.radiusSm,
-            fontSize: 18,
           }}
           aria-hidden
         >
-          {icon}
+          <HeliaIcon icon={Icon} size={18} color={helia.sage} strokeWidth={2} />
         </span>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: helia.forest }}>{title}</h2>
       </div>
@@ -62,12 +69,6 @@ export default function SecondOpinion() {
   const [response, setResponse] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   useEffect(() => {
     async function fetchUser() {
@@ -112,29 +113,13 @@ export default function SecondOpinion() {
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Second Opinion Support
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            Understand your diagnosis, know what to ask, and learn when a second opinion may help.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Second Opinion Support"
+        subtitle="Understand your diagnosis, know what to ask, and learn when a second opinion may help."
+        breadcrumb={[{ label: 'My Care', to: '/second-opinion' }, { label: 'Second Opinion' }]}
+      />
+      <main style={heliaPageMainStyle}>
           <form
             onSubmit={handleSubmit}
             style={{
@@ -215,14 +200,14 @@ export default function SecondOpinion() {
 
           {response && (
             <div>
-              <Section title="Understanding your diagnosis or treatment" icon="📖" accent={helia.sageMuted}>
+              <Section title="Understanding your diagnosis or treatment" icon={BookOpen} accent={helia.sageMuted}>
                 <p style={{ margin: 0, fontSize: 15, lineHeight: 1.65, color: helia.body, whiteSpace: 'pre-wrap' }}>
                   {response.diagnosisExplanation}
                 </p>
               </Section>
 
               {response.questionsForDoctor && response.questionsForDoctor.length > 0 && (
-                <Section title="Questions worth asking your doctor" icon="❓" accent="rgba(122, 158, 126, 0.18)">
+                <Section title="Questions worth asking your doctor" icon={HelpCircle} accent="rgba(122, 158, 126, 0.18)">
                   <ul style={{ margin: 0, paddingLeft: 22, fontSize: 15, lineHeight: 1.7, color: helia.body }}>
                     {response.questionsForDoctor.map((q, i) => (
                       <li key={i} style={{ marginBottom: 8 }}>{q}</li>
@@ -231,14 +216,14 @@ export default function SecondOpinion() {
                 </Section>
               )}
 
-              <Section title="When a second opinion makes sense" icon="🩺" accent="rgba(45, 90, 39, 0.08)">
+              <Section title="When a second opinion makes sense" icon={Stethoscope} accent="rgba(45, 90, 39, 0.08)">
                 <p style={{ margin: 0, fontSize: 15, lineHeight: 1.65, color: helia.body, whiteSpace: 'pre-wrap' }}>
                   {response.secondOpinionGuidance}
                 </p>
               </Section>
 
               {response.redFlags && response.redFlags.length > 0 && (
-                <Section title="Red flags — seek a second opinion sooner" icon="🚩" accent={helia.alertBg}>
+                <Section title="Red flags — seek a second opinion sooner" icon={Flag} accent={helia.alertBg}>
                   <ul style={{ margin: 0, paddingLeft: 22, fontSize: 15, lineHeight: 1.7, color: helia.body }}>
                     {response.redFlags.map((flag, i) => (
                       <li key={i} style={{ marginBottom: 8 }}>{flag}</li>
@@ -247,7 +232,7 @@ export default function SecondOpinion() {
                 </Section>
               )}
 
-              <Section title="How to advocate for yourself" icon="💪" accent={helia.warningBg}>
+              <Section title="How to advocate for yourself" icon={ShieldCheck} accent={helia.warningBg}>
                 <p style={{ margin: 0, fontSize: 15, lineHeight: 1.65, color: helia.body, whiteSpace: 'pre-wrap' }}>
                   {response.selfAdvocacy}
                 </p>
@@ -258,8 +243,7 @@ export default function SecondOpinion() {
               </p>
             </div>
           )}
-        </main>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

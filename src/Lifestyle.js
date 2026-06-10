@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
+import { HeliaIcon, LIFESTYLE_CATEGORY_ICONS, Salad } from './heliaIcons';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
 const CATEGORY_META = {
-  nutrition: { icon: '🥗', label: 'Nutrition', bg: 'rgba(122, 158, 126, 0.12)' },
-  lifestyle: { icon: '🌿', label: 'Lifestyle', bg: 'rgba(45, 90, 39, 0.08)' },
-  supplement: { icon: '💊', label: 'Supplement', bg: 'rgba(212, 168, 67, 0.12)' },
-  activity: { icon: '🏃', label: 'Activity', bg: 'rgba(122, 158, 126, 0.18)' },
+  nutrition: { icon: LIFESTYLE_CATEGORY_ICONS.nutrition, label: 'Nutrition', bg: 'rgba(122, 158, 126, 0.12)' },
+  lifestyle: { icon: LIFESTYLE_CATEGORY_ICONS.lifestyle, label: 'Lifestyle', bg: 'rgba(45, 90, 39, 0.08)' },
+  supplement: { icon: LIFESTYLE_CATEGORY_ICONS.supplement, label: 'Supplement', bg: 'rgba(212, 168, 67, 0.12)' },
+  activity: { icon: LIFESTYLE_CATEGORY_ICONS.activity, label: 'Activity', bg: 'rgba(122, 158, 126, 0.18)' },
 };
 
 function getCategoryMeta(category) {
@@ -39,12 +40,6 @@ export default function Lifestyle() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   useEffect(() => {
     async function fetchUser() {
@@ -83,29 +78,13 @@ export default function Lifestyle() {
   }, [user, fetchTips]);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Nutrition &amp; Lifestyle Tips
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            Actionable guidance based on your actual lab results and health records.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Nutrition & Lifestyle Tips"
+        subtitle="Actionable guidance based on your actual lab results and health records."
+        breadcrumb={[{ label: 'Track', to: '/lifestyle' }, { label: 'Nutrition & Lifestyle' }]}
+      />
+      <main style={heliaPageMainStyle}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginBottom: 20 }}>
             <button
               type="button"
@@ -169,7 +148,9 @@ export default function Lifestyle() {
                 color: helia.muted,
               }}
             >
-              <div style={{ fontSize: 40, marginBottom: 12 }} aria-hidden>🥗</div>
+              <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center' }} aria-hidden>
+                <HeliaIcon icon={Salad} size={40} color={helia.sage} strokeWidth={1.5} />
+              </div>
               <div style={{ fontWeight: 600, color: helia.forest, marginBottom: 8, fontSize: 18 }}>
                 No tips yet
               </div>
@@ -210,7 +191,7 @@ export default function Lifestyle() {
                       }}
                       aria-hidden
                     >
-                      {meta.icon}
+                      <HeliaIcon icon={meta.icon} size={22} color={helia.sage} strokeWidth={2} />
                     </div>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -251,8 +232,7 @@ export default function Lifestyle() {
           <p style={{ marginTop: 24, fontSize: 13, color: helia.muted, lineHeight: 1.5 }}>
             These tips are based on your records and are not medical advice. Always discuss dietary changes and supplements with your doctor.
           </p>
-        </main>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

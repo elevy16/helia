@@ -1,8 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -464,7 +464,6 @@ function OAuthModal({ open, hospitalName, phase, onClose }) {
 }
 
 export default function HospitalConnect() {
-  const navigate = useNavigate();
   const [user, setUser] = useState(null);
   const [row, setRow] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -507,11 +506,6 @@ export default function HospitalConnect() {
   useEffect(() => {
     if (user) loadConnection();
   }, [user, loadConnection]);
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   async function postProcessFhir(userId, hospitalName, fhirBundle) {
     const res = await fetch(`${HELIA_API_BASE}/api/process-fhir`, {
@@ -587,30 +581,13 @@ export default function HospitalConnect() {
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Hospital records
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16, maxWidth: 720 }}>
-            Connect your hospital’s Epic chart (simulated OAuth for now). When connected, Helia can pull structured
-            summaries—diagnoses, meds, labs, and immunizations—and index them for your AI advocate.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Hospital records"
+        subtitle="Connect your hospital's Epic chart (simulated OAuth for now). When connected, Helia can pull structured summaries—diagnoses, meds, labs, and immunizations—and index them for your AI advocate."
+        breadcrumb={[{ label: 'My Records', to: '/hospital' }, { label: 'Hospital Records' }]}
+      />
+      <main style={heliaPageMainStyle}>
           {error && (
             <div
               style={{
@@ -849,8 +826,7 @@ export default function HospitalConnect() {
               </section>
             </>
           )}
-        </main>
-      </div>
+      </main>
 
       <OAuthModal
         open={modalOpen}
@@ -858,6 +834,6 @@ export default function HospitalConnect() {
         phase={modalPhase}
         onClose={() => setModalOpen(false)}
       />
-    </div>
+    </>
   );
 }

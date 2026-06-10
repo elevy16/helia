@@ -1,9 +1,13 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, useNavigate } from 'react-router-dom';
 import Dashboard from './Dashboard';
+import Documents from './Documents';
+import HealthInsights from './HealthInsights';
+import HealthNarrative from './HealthNarrative';
 import SignUp from './SignUp';
 import Login from './Login';
 import RequireAuth from './RequireAuth';
+import AppShell from './AppShell';
 import AppointmentPrep from './AppointmentPrep';
 import Timeline from './Timeline';
 import AppointmentDebrief from './AppointmentDebrief';
@@ -45,10 +49,7 @@ function Home() {
         aria-hidden
         style={{ marginBottom: 20, display: 'block' }}
       >
-        <path
-          fill="#2d5a27"
-          d="M24 2 Q42 24 24 54 Q6 24 24 2 Z"
-        />
+        <path fill="#2d5a27" d="M24 2 Q42 24 24 54 Q6 24 24 2 Z" />
       </svg>
       <h1
         style={{
@@ -135,17 +136,28 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/signup" element={<SignUp />} />
         <Route path="/login" element={<Login />} />
-        <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
-        <Route path="/appointment-prep" element={<RequireAuth><AppointmentPrep /></RequireAuth>} />
-        <Route path="/debrief" element={<RequireAuth><AppointmentDebrief /></RequireAuth>} />
-        <Route path="/timeline" element={<RequireAuth><Timeline /></RequireAuth>} />
-        <Route path="/symptoms" element={<RequireAuth><SymptomTracker /></RequireAuth>} />
-        <Route path="/medications" element={<RequireAuth><MedicationTracker /></RequireAuth>} />
-        <Route path="/hospital" element={<RequireAuth><HospitalConnect /></RequireAuth>} />
-        <Route path="/alerts" element={<RequireAuth><HealthAlerts /></RequireAuth>} />
-        <Route path="/lifestyle" element={<RequireAuth><Lifestyle /></RequireAuth>} />
-        <Route path="/second-opinion" element={<RequireAuth><SecondOpinion /></RequireAuth>} />
-        <Route path="/emergency-card" element={<RequireAuth><EmergencyCard /></RequireAuth>} />
+        <Route
+          element={
+            <RequireAuth>
+              <AppShell />
+            </RequireAuth>
+          }
+        >
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/documents" element={<Documents />} />
+          <Route path="/insights" element={<HealthInsights />} />
+          <Route path="/narrative" element={<HealthNarrative />} />
+          <Route path="/appointment-prep" element={<AppointmentPrep />} />
+          <Route path="/debrief" element={<AppointmentDebrief />} />
+          <Route path="/timeline" element={<Timeline />} />
+          <Route path="/symptoms" element={<SymptomTracker />} />
+          <Route path="/medications" element={<MedicationTracker />} />
+          <Route path="/hospital" element={<HospitalConnect />} />
+          <Route path="/alerts" element={<HealthAlerts />} />
+          <Route path="/lifestyle" element={<Lifestyle />} />
+          <Route path="/second-opinion" element={<SecondOpinion />} />
+          <Route path="/emergency-card" element={<EmergencyCard />} />
+        </Route>
       </Routes>
     </Router>
   );

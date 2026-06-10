@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import HeliaSidebar from './HeliaSidebar';
 import { parseSummaryMarkdown } from './markdownSummary';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -135,7 +135,6 @@ export default function MedicationTracker() {
   const [notes, setNotes] = useState('');
   const [lastReview, setLastReview] = useState('');
   const [reviewError, setReviewError] = useState('');
-  const navigate = useNavigate();
 
   useEffect(() => {
     let m = true;
@@ -171,11 +170,6 @@ export default function MedicationTracker() {
     if (user) loadMedications();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   async function setMedicationActive(id, active) {
     if (!user?.id) return;
@@ -260,29 +254,13 @@ export default function MedicationTracker() {
   const inactiveList = items.filter((m) => !m.active);
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Medication tracker
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            Track what you take and get a quick Helia check-in when you add something new.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Medication tracker"
+        subtitle="Track what you take and get a quick Helia check-in when you add something new."
+        breadcrumb={[{ label: 'Track', to: '/medications' }, { label: 'Medication Tracker' }]}
+      />
+      <main style={heliaPageMainStyle}>
           <section style={{ marginBottom: 32 }}>
             <h2 style={{ color: helia.forest, marginBottom: 14, fontSize: 20, fontWeight: 700 }}>Add medication</h2>
             <form
@@ -510,8 +488,7 @@ export default function MedicationTracker() {
               </div>
             </section>
           )}
-        </main>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

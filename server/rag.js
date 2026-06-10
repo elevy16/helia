@@ -11,6 +11,95 @@ const SCANNED_PLACEHOLDER = 'This document appears to be a scanned image';
 
 const APPROX_CHARS_PER_TOKEN = 4;
 
+const HYBRID_SIM_WEIGHT = 0.65;
+const HYBRID_KW_WEIGHT = 0.35;
+const RETRIEVAL_POOL_SIZE = 20;
+const FINAL_CHUNK_COUNT = 12;
+const EMBED_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/** @type {Map<string, { vec: number[], expiresAt: number }>} */
+const embedCache = new Map();
+
+const CATEGORY_KEYWORDS = {
+  medication: [
+    'medication', 'medications', 'medicine', 'drug', 'drugs', 'prescription', 'prescribed',
+    'dose', 'dosage', 'pill', 'pills', 'tablet', 'capsule', 'mg', 'mcg', 'refill',
+    'pharmacy', 'antibiotic', 'antidepressant', 'statin', 'insulin', 'interaction',
+    'side effect', 'side effects', 'adverse', 'generic', 'brand name',
+  ],
+  lab: [
+    'lab', 'labs', 'blood test', 'blood work', 'test result', 'results', 'ferritin',
+    'a1c', 'hba1c', 'cholesterol', 'glucose', 'hemoglobin', 'cbc', 'panel', 'biomarker',
+    'reference range', 'ng/ml', 'mmol', 'creatinine', 'tsh', 'vitamin d', 'b12',
+    'lipid', 'triglyceride', 'alt', 'ast', 'bmp', 'cmp',
+  ],
+  symptom: [
+    'symptom', 'symptoms', 'pain', 'ache', 'hurts', 'fatigue', 'tired', 'nausea',
+    'vomiting', 'fever', 'headache', 'dizzy', 'dizziness', 'rash', 'swelling',
+    'shortness of breath', 'cough', 'chest pain', 'palpitation', 'numbness', 'tingling',
+    'insomnia', 'appetite', 'bloating', 'cramp',
+  ],
+  personal: [
+    'my doctor', 'my records', 'my chart', 'my last', 'my recent', 'my upload',
+    'my document', 'my lab', 'my medication', 'my diagnosis', 'my history',
+    'according to my', 'in my file', 'from my visit',
+  ],
+  prevention: [
+    'prevent', 'prevention', 'preventive', 'screening', 'screen', 'vaccine', 'vaccination',
+    'immunization', 'booster', 'flu shot', 'checkup', 'wellness', 'routine exam',
+    'mammogram', 'colonoscopy', 'pap smear', 'outbreak', 'travel health',
+  ],
+  nutrition: [
+    'diet', 'food', 'eat', 'eating', 'nutrition', 'nutrient', 'meal', 'calorie',
+    'protein', 'carb', 'fiber', 'iron-rich', 'supplement', 'vitamin', 'mineral',
+    'weight loss', 'hydration', 'sodium', 'sugar intake', 'lifestyle',
+  ],
+};
+
+const CATEGORY_PRIORITY = ['medication', 'lab', 'symptom', 'personal', 'prevention', 'nutrition'];
+
+const RETRIEVAL_PLANS = {
+  medication: [
+    { type: 'prefix', prefix: 'fda-', count: 12 },
+    { type: 'personal', count: 8 },
+    { type: 'nih', count: 5 },
+    { type: 'prefix', prefix: 'pubmed-', count: 5 },
+  ],
+  lab: [
+    { type: 'personal', count: 10 },
+    { type: 'nih', count: 10 },
+    { type: 'prefix', prefix: 'pubmed-', count: 12 },
+  ],
+  prevention: [
+    { type: 'prefix', prefix: 'cdc-', count: 12 },
+    { type: 'nih', count: 8 },
+    { type: 'prefix', prefix: 'pubmed-', count: 5 },
+    { type: 'personal', count: 5 },
+  ],
+  nutrition: [
+    { type: 'nih', count: 8 },
+    { type: 'prefix', prefix: 'pubmed-', count: 8 },
+    { type: 'prefix', prefix: 'cdc-', count: 6 },
+    { type: 'personal', count: 4 },
+  ],
+  symptom: [
+    { type: 'personal', count: 12 },
+    { type: 'nih', count: 8 },
+    { type: 'prefix', prefix: 'pubmed-', count: 8 },
+  ],
+  personal: [
+    { type: 'personal', count: 16 },
+    { type: 'nih', count: 6 },
+  ],
+  general: [
+    { type: 'personal', count: 8 },
+    { type: 'nih', count: 6 },
+    { type: 'prefix', prefix: 'fda-', count: 4 },
+    { type: 'prefix', prefix: 'cdc-', count: 4 },
+    { type: 'prefix', prefix: 'pubmed-', count: 6 },
+  ],
+};
+
 /** Split into sentences on . ? ! followed by space/newline (preserves abbreviations poorly but OK for medical prose). */
 function splitSentences(block) {
   const s = String(block || '').trim();
@@ -102,6 +191,34 @@ const STOPWORDS = new Set([
   'should', 'does', 'been', 'being', 'such', 'each', 'also', 'will', 'just', 'like',
 ]);
 
+function classifyQuery(queryText) {
+  const q = String(queryText || '').toLowerCase();
+  let best = 'general';
+  let bestScore = 0;
+
+  for (const cat of CATEGORY_PRIORITY) {
+    const keywords = CATEGORY_KEYWORDS[cat] || [];
+    let score = 0;
+    for (const kw of keywords) {
+      if (q.includes(kw)) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = cat;
+    }
+  }
+
+  return best;
+}
+
+function inferMedSourceType(topicSlug) {
+  const slug = String(topicSlug || '');
+  if (slug.startsWith('fda-')) return 'fda';
+  if (slug.startsWith('cdc-')) return 'cdc';
+  if (slug.startsWith('pubmed-')) return 'pubmed';
+  return 'nih';
+}
+
 function tokenizeQueryForRag(queryText) {
   return String(queryText || '')
     .toLowerCase()
@@ -121,16 +238,53 @@ function keywordOverlapScore(queryText, chunkContent) {
   return hits / words.length;
 }
 
-/** Combine vector similarity with lexical overlap; sort descending. */
-function rerankChunks(chunks, queryText, similarityWeight = 0.62, keywordWeight = 0.38) {
+function pubmedRecencyBonus(content) {
+  const text = String(content || '');
+  const yearMatch =
+    text.match(/Journal:[^(]*\((20(?:2[3-5]))\)/i) ||
+    text.match(/\((20(?:2[3-5]))\)/) ||
+    text.match(/Year:\s*(20(?:2[3-5]))/i);
+  if (!yearMatch) return 0;
+  const year = parseInt(yearMatch[1], 10);
+  if (year >= 2025) return 0.05;
+  if (year === 2024) return 0.035;
+  if (year === 2023) return 0.02;
+  return 0;
+}
+
+/** Combine vector similarity, lexical overlap, and optional PubMed freshness bonus. */
+function rerankChunks(chunks, queryText, similarityWeight = HYBRID_SIM_WEIGHT, keywordWeight = HYBRID_KW_WEIGHT) {
   const scored = chunks.map((c) => {
     const sim = typeof c.similarity === 'number' && !Number.isNaN(c.similarity) ? c.similarity : 0;
     const kw = keywordOverlapScore(queryText, c.content);
-    const rerank_score = similarityWeight * sim + keywordWeight * kw;
-    return { ...c, keyword_score: kw, rerank_score };
+    let rerank_score = similarityWeight * sim + keywordWeight * kw;
+    const freshness = c.source_type === 'pubmed' ? pubmedRecencyBonus(c.content) : 0;
+    rerank_score += freshness;
+    return { ...c, keyword_score: kw, freshness_bonus: freshness, rerank_score };
   });
   scored.sort((a, b) => b.rerank_score - a.rerank_score);
   return scored;
+}
+
+function chunkDedupeKey(chunk) {
+  const src = chunk.source_type || 'unknown';
+  const id =
+    chunk.document_id != null
+      ? `doc:${chunk.document_id}:${chunk.chunk_index}`
+      : `med:${chunk.topic_slug || ''}:${chunk.chunk_index}`;
+  return `${src}:${id}:${String(chunk.content || '').slice(0, 120)}`;
+}
+
+function dedupeChunks(chunks) {
+  const seen = new Set();
+  const out = [];
+  for (const c of chunks) {
+    const key = chunkDedupeKey(c);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+  }
+  return out;
 }
 
 function toVectorParam(vec) {
@@ -225,66 +379,226 @@ async function embedQuery(openaiApiKey, queryText) {
   return vec;
 }
 
-async function retrieveRagChunks(supabase, openaiApiKey, { userId, queryText, docLimit = 8, medLimit = 5 }) {
-  console.log('[RAG] retrieveRagChunks start userId=', userId, 'queryLen=', String(queryText || '').length);
-  const vec = await embedQuery(openaiApiKey, queryText);
-  if (!vec) {
-    console.log('[RAG] retrieveRagChunks no embedding, returning empty');
-    return { docChunks: [], medChunks: [], queryEmbedding: null };
+async function embedQueryCached(openaiApiKey, queryText) {
+  const q = String(queryText || '').trim().slice(0, 12000);
+  if (!q) return null;
+
+  const now = Date.now();
+  const cached = embedCache.get(q);
+  if (cached && cached.expiresAt > now) {
+    console.log('[RAG] embedQuery cache hit');
+    return cached.vec;
   }
-  const query_embedding = toVectorParam(vec);
 
-  const fetchDoc = Math.min(32, Math.max(docLimit * 2, docLimit));
-  const fetchMed = Math.min(32, Math.max(medLimit * 2, medLimit));
+  const vec = await embedQuery(openaiApiKey, q);
+  if (vec) {
+    embedCache.set(q, { vec, expiresAt: now + EMBED_CACHE_TTL_MS });
+  }
+  return vec;
+}
 
-  console.log(
-    '[RAG] calling Supabase RPC match_document_chunks + match_medical_knowledge, fetchDoc=',
-    fetchDoc,
-    'fetchMed=',
-    fetchMed,
-    'vector str len=',
-    query_embedding.length
-  );
-
-  const [{ data: docData, error: docErr }, { data: medData, error: medErr }] = await Promise.all([
-    supabase.rpc('match_document_chunks', {
-      query_embedding,
-      filter_user_id: userId,
-      match_count: fetchDoc,
-    }),
-    supabase.rpc('match_medical_knowledge', {
-      query_embedding,
-      match_count: fetchMed,
-    }),
-  ]);
-
-  if (docErr) console.error('[RAG] match_document_chunks error:', docErr.code, docErr.message, docErr.details || '');
-  else console.log('[RAG] match_document_chunks rows:', (docData && docData.length) || 0);
-  if (medErr) console.error('[RAG] match_medical_knowledge error:', medErr.code, medErr.message, medErr.details || '');
-  else console.log('[RAG] match_medical_knowledge rows:', (medData && medData.length) || 0);
-
-  const docMapped = (docData || []).map((r) => ({
+function mapPersonalRow(r) {
+  return {
     content: r.content,
     chunk_index: r.chunk_index,
     document_id: r.document_id,
     filename: r.filename,
     similarity: r.similarity,
-  }));
+    source_type: 'personal',
+  };
+}
 
-  const medMapped = (medData || []).map((r) => ({
+function mapMedicalRow(r) {
+  const topicSlug = r.topic_slug || '';
+  return {
     content: r.content,
     chunk_index: r.chunk_index,
+    topic_slug: topicSlug,
     topic_title: r.topic_title,
     source_url: r.source_url,
     source_citation: r.source_citation,
     similarity: r.similarity,
-  }));
+    source_type: inferMedSourceType(topicSlug),
+  };
+}
 
-  const docChunks = rerankChunks(docMapped, queryText).slice(0, docLimit);
-  const medChunks = rerankChunks(medMapped, queryText).slice(0, medLimit);
+async function fetchPersonalChunksForUser(supabase, queryEmbedding, userId, count) {
+  const { data, error } = await supabase.rpc('match_document_chunks', {
+    query_embedding: queryEmbedding,
+    filter_user_id: userId,
+    match_count: count,
+  });
+  if (error) {
+    console.error('[RAG] match_document_chunks error:', error.message);
+    return [];
+  }
+  return (data || []).map(mapPersonalRow);
+}
 
-  console.log('[RAG] retrieveRagChunks done (re-ranked)');
-  return { docChunks, medChunks, queryEmbedding: vec };
+async function fetchMedicalChunks(supabase, queryEmbedding, planItem) {
+  const count = planItem.count;
+  if (planItem.type === 'personal') return [];
+
+  if (planItem.type === 'nih') {
+    const { data, error } = await supabase.rpc('match_medical_knowledge_nih', {
+      query_embedding: queryEmbedding,
+      match_count: count,
+    });
+    if (!error) return (data || []).map(mapMedicalRow);
+    console.warn('[RAG] match_medical_knowledge_nih unavailable, falling back:', error.message);
+  }
+
+  if (planItem.type === 'prefix') {
+    const { data, error } = await supabase.rpc('match_medical_knowledge_prefix', {
+      query_embedding: queryEmbedding,
+      match_count: count,
+      slug_prefix: planItem.prefix,
+    });
+    if (!error) return (data || []).map(mapMedicalRow);
+    console.warn('[RAG] match_medical_knowledge_prefix unavailable, falling back:', error.message);
+  }
+
+  const { data: fallback, error: fbErr } = await supabase.rpc('match_medical_knowledge', {
+    query_embedding: queryEmbedding,
+    match_count: Math.min(32, count * 3),
+  });
+  if (fbErr) {
+    console.error('[RAG] match_medical_knowledge fallback error:', fbErr.message);
+    return [];
+  }
+
+  let rows = (fallback || []).map(mapMedicalRow);
+  if (planItem.type === 'prefix') {
+    rows = rows.filter((r) => (r.topic_slug || '').startsWith(planItem.prefix));
+  } else if (planItem.type === 'nih') {
+    rows = rows.filter(
+      (r) =>
+        !(r.topic_slug || '').startsWith('fda-') &&
+        !(r.topic_slug || '').startsWith('cdc-') &&
+        !(r.topic_slug || '').startsWith('pubmed-')
+    );
+  }
+  return rows.slice(0, count);
+}
+
+async function executeRetrievalPlan(supabase, queryEmbedding, userId, category) {
+  const plan = RETRIEVAL_PLANS[category] || RETRIEVAL_PLANS.general;
+  const fetches = plan.map(async (item) => {
+    if (item.type === 'personal') {
+      return fetchPersonalChunksForUser(supabase, queryEmbedding, userId, item.count);
+    }
+    return fetchMedicalChunks(supabase, queryEmbedding, item);
+  });
+
+  const batches = await Promise.all(fetches);
+  return dedupeChunks(batches.flat());
+}
+
+function splitChunksForContext(finalChunks) {
+  const docChunks = finalChunks
+    .filter((c) => c.source_type === 'personal')
+    .map(({ content, chunk_index, document_id, filename, similarity, rerank_score, keyword_score }) => ({
+      content,
+      chunk_index,
+      document_id,
+      filename,
+      similarity,
+      rerank_score,
+      keyword_score,
+    }));
+
+  const medChunks = finalChunks
+    .filter((c) => c.source_type !== 'personal')
+    .map(
+      ({
+        content,
+        chunk_index,
+        topic_slug,
+        topic_title,
+        source_url,
+        source_citation,
+        similarity,
+        source_type,
+        rerank_score,
+        keyword_score,
+      }) => ({
+        content,
+        chunk_index,
+        topic_slug,
+        topic_title,
+        source_url,
+        source_citation,
+        similarity,
+        source_type,
+        rerank_score,
+        keyword_score,
+      })
+    );
+
+  return { docChunks, medChunks };
+}
+
+function summarizeSelectedSources(chunks) {
+  const counts = {};
+  for (const c of chunks) {
+    const src = c.source_type || 'unknown';
+    counts[src] = (counts[src] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([src, n]) => `${src}:${n}`);
+}
+
+async function retrieveRagChunks(supabase, openaiApiKey, { userId, queryText }) {
+  const category = classifyQuery(queryText);
+  console.log('[RAG] retrieveRagChunks start', {
+    userId: userId ? String(userId).slice(0, 8) + '…' : null,
+    queryLen: String(queryText || '').length,
+    category,
+  });
+
+  const vec = await embedQueryCached(openaiApiKey, queryText);
+  if (!vec) {
+    console.log('[RAG] retrieveRagChunks no embedding, returning empty');
+    return {
+      docChunks: [],
+      medChunks: [],
+      category,
+      selectedSources: [],
+      queryEmbedding: null,
+    };
+  }
+
+  const queryEmbedding = toVectorParam(vec);
+  const candidates = await executeRetrievalPlan(supabase, queryEmbedding, userId, category);
+
+  const pool = candidates
+    .sort((a, b) => (b.similarity || 0) - (a.similarity || 0))
+    .slice(0, RETRIEVAL_POOL_SIZE);
+
+  const reranked = rerankChunks(pool, queryText);
+  const finalChunks = reranked.slice(0, FINAL_CHUNK_COUNT);
+  const selectedSources = summarizeSelectedSources(finalChunks);
+  const { docChunks, medChunks } = splitChunksForContext(finalChunks);
+
+  console.log('[RAG] retrieveRagChunks done', {
+    category,
+    poolSize: pool.length,
+    finalCount: finalChunks.length,
+    selectedSources: selectedSources.join(', '),
+    slugs: finalChunks
+      .filter((c) => c.topic_slug)
+      .map((c) => c.topic_slug)
+      .slice(0, 8),
+  });
+
+  return {
+    docChunks,
+    medChunks,
+    category,
+    selectedSources,
+    queryEmbedding: vec,
+  };
 }
 
 function buildRagContextBlock(docChunks, medChunks) {
@@ -302,15 +616,25 @@ function buildRagContextBlock(docChunks, medChunks) {
   if (medChunks.length) {
     parts.push(
       [
-        'Retrieved general reference information from NIH MedlinePlus and/or FDA drug labeling excerpts (public educational / regulatory text).',
-        'When you rely on MedlinePlus material, cite it clearly (for example: "According to NIH MedlinePlus ..."). For FDA label excerpts, say clearly that information comes from FDA-approved prescribing information.',
-        ...medChunks.map(
-          (c) =>
-            `---\n${c.source_citation || 'NIH MedlinePlus'}\n` +
+        'Retrieved general reference information from curated medical knowledge (NIH MedlinePlus, FDA drug labeling, CDC guidelines, PubMed review abstracts).',
+        'Cite sources clearly in plain language when you use them (for example: "According to NIH MedlinePlus ...", "FDA prescribing information notes ...", "CDC guidance suggests ...", or "A recent PubMed review found ...").',
+        ...medChunks.map((c) => {
+          const label = c.source_citation || c.topic_title || 'Medical reference';
+          const srcNote =
+            c.source_type === 'fda'
+              ? 'FDA drug labeling'
+              : c.source_type === 'cdc'
+                ? 'CDC guideline'
+                : c.source_type === 'pubmed'
+                  ? 'PubMed abstract'
+                  : 'NIH MedlinePlus';
+          return (
+            `---\n${label} (${srcNote})\n` +
             `Topic: ${c.topic_title || 'Health topic'}\n` +
             `Source: ${c.source_url || 'https://medlineplus.gov/'}\n` +
             `${c.content}\n---`
-        ),
+          );
+        }),
       ].join('\n')
     );
   }
@@ -332,4 +656,6 @@ module.exports = {
   shouldSkipDocumentEmbedding,
   rerankChunks,
   keywordOverlapScore,
+  classifyQuery,
+  pubmedRecencyBonus,
 };

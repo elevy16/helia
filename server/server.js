@@ -10,9 +10,13 @@ const {
   parseHealthAlerts,
   parseLifestyleTips,
   parseSecondOpinionResponse,
+  generateAskDoctorQuestions,
+  getCachedHealthNarrative,
+  generateAndCacheHealthNarrative,
   callClaude,
 } = require('./healthContext');
 const { calculateHealthScore, recordEngagement } = require('./healthScore');
+const { fetchRecentMemories, buildMemoriesBlock, extractAndStoreMemories } = require('./chatMemories');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -874,9 +878,15 @@ ${String(text).slice(0, 70000)}`;
 // Chat endpoint: forward messages to Anthropic API (RAG over personal chunks + MedlinePlus)
 app.post('/api/chat', async (req, res) => {
   const chatReqId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  console.log(`[chat:${chatReqId}] POST /api/chat start`);
+    console.log(`[chat:${chatReqId}] POST /api/chat start`);
   try {
     const { messages, systemPrompt, userId } = req.body;
+
+    const lastUserMsg = Array.isArray(messages)
+      ? [...messages].reverse().find((m) => m.role === 'user')
+      : null;
+    const lastUserContent =
+      lastUserMsg && lastUserMsg.content != null ? String(lastUserMsg.content).trim() : '';
 
     if (!messages || !Array.isArray(messages)) {
       console.log(`[chat:${chatReqId}] bad request: messages not an array`);
@@ -901,19 +911,17 @@ app.post('/api/chat', async (req, res) => {
       console.log(`[chat:${chatReqId}] RAG path: queryText length=${queryText.length}`);
       const ragStart = Date.now();
       try {
-        const { docChunks, medChunks } = await withTimeout(
+        const { docChunks, medChunks, category, selectedSources } = await withTimeout(
           retrieveRagChunks(supabase, openaiKey, {
             userId,
             queryText,
-            docLimit: 8,
-            medLimit: 5,
           }),
           25000,
           'retrieveRagChunks'
         );
         ragBlock = buildRagContextBlock(docChunks, medChunks);
         console.log(
-          `[chat:${chatReqId}] RAG done in ${Date.now() - ragStart}ms docChunks=${docChunks.length} medChunks=${medChunks.length} ragBlockLen=${ragBlock.length}`
+          `[chat:${chatReqId}] RAG done in ${Date.now() - ragStart}ms category=${category} sources=[${selectedSources.join(', ')}] docChunks=${docChunks.length} medChunks=${medChunks.length} ragBlockLen=${ragBlock.length}`
         );
         if (ragBlock.length > MAX_RAG_BLOCK_CHARS) {
           console.warn(
@@ -929,9 +937,22 @@ app.post('/api/chat', async (req, res) => {
       if (!userId) console.warn(`[chat:${chatReqId}] userId missing; skipping RAG`);
     }
 
+    let memoriesBlock = '';
+    if (userId) {
+      try {
+        const memories = await fetchRecentMemories(supabase, userId, 30);
+        memoriesBlock = buildMemoriesBlock(memories);
+        if (memoriesBlock) {
+          console.log(`[chat:${chatReqId}] loaded ${memories.length} chat memories`);
+        }
+      } catch (memErr) {
+        console.warn(`[chat:${chatReqId}] chat memories fetch failed:`, memErr.message || memErr);
+      }
+    }
+
     // Build Anthropic messages input for messages API
     const baseSystemText = `You are Helia, a warm and supportive AI health companion.
-You may receive retrieved excerpts from the user's uploaded documents and from NIH MedlinePlus reference material.
+You may receive retrieved excerpts from the user's uploaded documents and from curated medical reference material (NIH MedlinePlus, FDA drug labeling, CDC guidelines, and PubMed review abstracts).
 Use document excerpts to personalize the conversation (they may be partial); do not treat them as a complete medical record.
 When you use MedlinePlus / NIH reference excerpts, cite the source in plain language (for example: "According to NIH MedlinePlus ...") so the user can see where general medical information came from.
 If the user mentions anything health-related (for example: doctor visits, therapy, symptoms, medications, labs, diagnoses, treatment plans, or lifestyle concerns), connect to relevant retrieved context when it helps, and otherwise answer helpfully.
@@ -943,6 +964,9 @@ Use plain English, avoid unnecessary jargon, and keep the tone encouraging and p
     }
     if (ragBlock) {
       systemParts.push(`Context retrieved for this message (RAG):${ragBlock}`);
+    }
+    if (memoriesBlock) {
+      systemParts.push(memoriesBlock);
     }
     let systemText = systemParts.join('\n\n');
     if (systemText.length > MAX_TOTAL_SYSTEM_CHARS) {
@@ -1006,6 +1030,12 @@ Use plain English, avoid unnecessary jargon, and keep the tone encouraging and p
 
     console.log(`[chat:${chatReqId}] piping Anthropic SSE to client`);
     await pipeAnthropicSseToClient(anthropicRes.body, res, chatReqId);
+
+    if (userId && lastUserContent) {
+      extractAndStoreMemories(supabase, apiKey, userId, lastUserContent).catch((memErr) => {
+        console.warn(`[chat:${chatReqId}] memory extraction failed:`, memErr.message || memErr);
+      });
+    }
   } catch (err) {
     console.error('[chat] unhandled error:', err && err.stack ? err.stack : err);
     if (!res.headersSent) {
@@ -1491,17 +1521,18 @@ app.post('/api/second-opinion', async (req, res) => {
     if (openaiKey) {
       const queryText = `${diagnosis} ${concerns || ''}`.trim();
       try {
-        const { docChunks, medChunks } = await withTimeout(
+        const { docChunks, medChunks, category, selectedSources } = await withTimeout(
           retrieveRagChunks(supabase, openaiKey, {
             userId,
             queryText,
-            docLimit: 8,
-            medLimit: 5,
           }),
           25000,
           'retrieveRagChunks'
         );
         ragBlock = buildRagContextBlock(docChunks, medChunks);
+        console.log(
+          `[second-opinion:${reqId}] RAG category=${category} sources=[${selectedSources.join(', ')}] doc=${docChunks.length} med=${medChunks.length}`
+        );
         if (ragBlock.length > MAX_RAG_BLOCK_CHARS) {
           ragBlock = `${ragBlock.slice(0, MAX_RAG_BLOCK_CHARS)}\n\n[Context truncated.]`;
         }
@@ -1565,6 +1596,89 @@ app.post('/api/health-score', async (req, res) => {
   } catch (err) {
     console.error('[health-score]', err);
     return res.status(500).json({ error: err.message || 'Failed to calculate health score' });
+  }
+});
+
+// Ask-doctor questions from a document or insight
+app.post('/api/ask-doctor', async (req, res) => {
+  const reqId = `ask-doc-${Date.now()}`;
+  try {
+    const { userId, documentId, insightContext } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set on server' });
+
+    let documentText = '';
+    let sourceLabel = '';
+
+    if (documentId) {
+      const { data, error } = await supabase
+        .from('document_texts')
+        .select('filename, content, summary')
+        .eq('user_id', userId)
+        .eq('id', documentId)
+        .maybeSingle();
+
+      if (error) throw new Error(error.message);
+      if (!data) return res.status(404).json({ error: 'Document not found' });
+
+      documentText = String(data.content || data.summary || '').trim();
+      sourceLabel = data.filename || 'Uploaded document';
+      if (!documentText) {
+        return res.status(400).json({ error: 'This document has no extracted text yet.' });
+      }
+    } else if (insightContext && typeof insightContext === 'object') {
+      const title = String(insightContext.title || 'Health insight').trim();
+      const description = String(insightContext.description || '').trim();
+      const action = String(insightContext.actionSuggestion || '').trim();
+      documentText = [title, description, action].filter(Boolean).join('\n\n');
+      sourceLabel = title;
+      if (!documentText) {
+        return res.status(400).json({ error: 'Insight context is empty' });
+      }
+    } else {
+      return res.status(400).json({ error: 'documentId or insightContext is required' });
+    }
+
+    const questions = await generateAskDoctorQuestions(apiKey, documentText, sourceLabel);
+    return res.json({ questions, source: sourceLabel });
+  } catch (err) {
+    console.error(`[ask-doctor:${reqId}]`, err);
+    return res.status(500).json({ error: err.message || 'Failed to generate questions' });
+  }
+});
+
+// Health narrative — cached letter-style summary
+app.post('/api/health-narrative', async (req, res) => {
+  const reqId = `narrative-${Date.now()}`;
+  try {
+    const { userId, refresh } = req.body;
+    if (!userId) return res.status(400).json({ error: 'userId is required' });
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not set on server' });
+
+    if (!refresh) {
+      const cached = await getCachedHealthNarrative(supabase, userId);
+      if (cached && cached.narrative) {
+        return res.json({
+          narrative: cached.narrative,
+          generatedAt: cached.generated_at,
+          cached: true,
+        });
+      }
+    }
+
+    const row = await generateAndCacheHealthNarrative(supabase, apiKey, userId);
+    return res.json({
+      narrative: row.narrative,
+      generatedAt: row.generated_at,
+      cached: false,
+    });
+  } catch (err) {
+    console.error(`[health-narrative:${reqId}]`, err);
+    return res.status(500).json({ error: err.message || 'Failed to generate health narrative' });
   }
 });
 

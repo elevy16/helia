@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
 import { parseSummaryMarkdown } from './markdownSummary';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
 
 const HELIA_API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
@@ -19,12 +19,6 @@ export default function AppointmentDebrief() {
   const [latestSummary, setLatestSummary] = useState('');
   const [debriefs, setDebriefs] = useState([]);
   const [loadingDebriefs, setLoadingDebriefs] = useState(true);
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   useEffect(() => {
     let mounted = true;
@@ -125,29 +119,13 @@ export default function AppointmentDebrief() {
   };
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
-      <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Appointment debrief
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            Capture what happened at your visit and get a clear AI summary you can revisit.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 920, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+    <>
+      <HeliaPageHeader
+        title="Appointment debrief"
+        subtitle="Capture what happened at your visit and get a clear AI summary you can revisit."
+        breadcrumb={[{ label: 'My Care', to: '/appointment-prep' }, { label: 'Appointment Debrief' }]}
+      />
+      <main style={heliaPageMainStyle}>
       <form
         onSubmit={handleSubmit}
         style={{
@@ -302,8 +280,7 @@ export default function AppointmentDebrief() {
           </div>
         )}
       </section>
-        </main>
-      </div>
-    </div>
+      </main>
+    </>
   );
 }

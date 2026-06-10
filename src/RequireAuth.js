@@ -1,29 +1,13 @@
-import React, { useEffect, useState } from 'react';
-import { supabase } from './supabaseClient';
+import React from 'react';
 import { Navigate } from 'react-router-dom';
+import { useAuthUser } from './useAuthUser';
 
 export default function RequireAuth({ children }) {
-  const [loading, setLoading] = useState(true);
-  const [isAuth, setIsAuth] = useState(false);
+  const { user, loading } = useAuthUser();
 
-  useEffect(() => {
-    let mounted = true;
+  if (loading) return null;
 
-    async function check() {
-      const { data } = await supabase.auth.getSession();
-      if (!mounted) return;
-      setIsAuth(!!data.session);
-      setLoading(false);
-    }
-
-    check();
-
-    return () => { mounted = false; };
-  }, []);
-
-  if (loading) return null; // or a spinner
-
-  if (!isAuth) {
+  if (!user) {
     return <Navigate to="/login" replace />;
   }
 

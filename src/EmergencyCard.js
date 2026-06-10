@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase } from './supabaseClient';
-import HeliaSidebar from './HeliaSidebar';
+import HeliaPageHeader from './HeliaPageHeader';
 import { helia } from './heliaTheme';
+import { heliaPageMainStyle } from './heliaUi';
 import {
   buildCardViewModel,
   downloadEmergencyCardPdf,
@@ -87,12 +87,6 @@ export default function EmergencyCard() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const prefilledRef = useRef(false);
-  const navigate = useNavigate();
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    navigate('/');
-  }
 
   const loadData = useCallback(async (userId) => {
     setLoading(true);
@@ -244,33 +238,16 @@ export default function EmergencyCard() {
   }
 
   return (
-    <div
-      className="emergency-card-page"
-      style={{
-        display: 'flex',
-        minHeight: '100vh',
-        background: helia.cream,
-        color: helia.body,
-        fontFamily: helia.font,
-        fontSize: 17,
-        lineHeight: 1.55,
-      }}
-    >
+    <div className="emergency-card-page">
       <div className="no-print">
-        <HeliaSidebar userEmail={user?.email} onLogout={handleLogout} />
+        <HeliaPageHeader
+          title="Emergency Health Card"
+          subtitle="A one-page summary for first responders or a new doctor. Pre-filled from your Helia records where possible."
+          breadcrumb={[{ label: 'My Records', to: '/emergency-card' }, { label: 'Emergency Card' }]}
+        />
       </div>
 
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-        <div className="no-print" style={{ padding: '28px 36px 8px' }}>
-          <h1 style={{ margin: 0, fontSize: 30, fontWeight: 800, color: helia.forest, letterSpacing: '-0.02em' }}>
-            Emergency Health Card
-          </h1>
-          <p style={{ margin: '10px 0 0', color: helia.muted, fontSize: 16 }}>
-            A one-page summary for first responders or a new doctor. Pre-filled from your Helia records where possible.
-          </p>
-        </div>
-
-        <main style={{ padding: '12px 36px 48px', maxWidth: 960, width: '100%', margin: '0 auto', boxSizing: 'border-box' }}>
+      <main style={{ ...heliaPageMainStyle, maxWidth: 960 }}>
           {loading ? (
             <div className="no-print" style={{ color: helia.muted, display: 'flex', gap: 10, alignItems: 'center' }}>
               <span className="ma-spinner ma-spinner--sm ma-spinner--on-light" aria-hidden />
@@ -482,8 +459,7 @@ export default function EmergencyCard() {
               </div>
             </>
           )}
-        </main>
-      </div>
+      </main>
     </div>
   );
 }
